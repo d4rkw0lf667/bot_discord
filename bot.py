@@ -361,7 +361,5 @@ async def rate(ctx, *, texte: str):
 # LANCEMENT DU BOT
 # ===========================================================
 if __name__ == "__main__":
-    TOKEN = "VOTRE_TOKEN_DISCORD_ICI"  # <-- Mettez votre vrai Token Discord ici
-    bot.run(
-        "p3eLBRKuMub1GAhKYOzsueyh9r+LlVo+mkaK9SowEUCS4KOjii/DzXPC3AiaecNFc/pP4Sw7TTk0/Sw2vrNTkw=="
-    )
+    TOKEN = "MTUzOTI3NzAxODcwMzcyNDYzNQ.GoCz35.rsngQWdapCHo3znFyGDKPD36XltG3wtnVDOPGA"
+    bot.run(TOKEN)
