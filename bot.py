@@ -360,6 +360,8 @@ async def rate(ctx, *, texte: str):
 # ===========================================================
 # LANCEMENT DU BOT
 # ===========================================================
+import os
+
 if __name__ == "__main__":
-    TOKEN = "MTUzOTI3NzAxODcwMzcyNDYzNQ.GoCz35.rsngQWdapCHo3znFyGDKPD36XltG3wtnVDOPGA"
+    TOKEN = os.environ.get("DISCORD_TOKEN")
     bot.run(TOKEN)
