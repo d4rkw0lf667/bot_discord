@@ -32,7 +32,7 @@ spam_tracker = {}     # {user_id: [timestamp1, timestamp2, ...]}
 
 server_configs = {
     "welcome_channel": None,
-    "level_channel": None,  # Nouveau salon pour les niveaux
+    "level_channel": None,  # Salon pour les niveaux
     "autorole_id": None,
     "ticket_category_id": None,
     "spam_limit": 5,        # Nombre de messages par défaut
@@ -132,7 +132,6 @@ async def send_mod_log(guild, title, color, member, moderator, reason, duration=
     
     await chan.send(embed=embed)
 
-# Fonction utilitaire pour envoyer les embeds de sanction en MP avec tous les détails demandés
 async def send_sanction_dm(member, title, description, color, duration, moderator, reason):
     now = datetime.utcnow()
     date_str = now.strftime("%d/%m/%Y")
@@ -151,7 +150,7 @@ async def send_sanction_dm(member, title, description, color, duration, moderato
         pass
 
 # ---------------------------------------------------------
-# HELP PERSONNALISÉ (COMMANDES À LA LIGNE)
+# HELP PERSONNALISÉ
 # ---------------------------------------------------------
 class MyHelp(commands.HelpCommand):
     async def send_bot_help(self, mapping):
@@ -219,14 +218,14 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
 
 # ---------------------------------------------------------
-# ÉVÉNEMENTS & LOGS FONCTIONNELS (AVEC ANTI-SPAM MIS À JOUR)
+# ÉVÉNEMENTS & LOGS
 # ---------------------------------------------------------
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
         return
 
-    # Gestion de l'anti-spam automatique (Mute 5min + Warn automatique)
+    # Anti-spam
     user_id = message.author.id
     now_ts = datetime.utcnow().timestamp()
     
@@ -239,7 +238,7 @@ async def on_message(message):
 
     if len(spam_tracker[user_id]) > server_configs["spam_limit"]:
         if not message.author.guild_permissions.administrator:
-            spam_tracker[user_id] = [] # Reset pour éviter le spam en boucle
+            spam_tracker[user_id] = []
             
             if user_id not in user_warns:
                 user_warns[user_id] = []
@@ -254,13 +253,11 @@ async def on_message(message):
 
             await send_mod_log(message.guild, "⚠️ Action : Avertissement Automatique & Mute (Anti-spam)", discord.Color.orange(), message.author, bot.user, f"Spam de {server_configs['spam_limit']} messages en {server_configs['spam_time']}s", duration="5m", sanction_type="Avertissement & Mute (Spam)")
 
-            # Mute automatique de 5 minutes
             try:
                 await message.author.timeout(timedelta(minutes=5), reason="Spam automatique : Mute 5 min")
             except:
                 pass
 
-            # Notification en MP avec le nouvel embed détaillé
             await send_sanction_dm(
                 message.author,
                 "⚠️ Sanction : Mute & Avertissement (Anti-spam)",
@@ -273,7 +270,7 @@ async def on_message(message):
 
             await message.channel.send(f"🔇 {message.author.mention} a reçu un avertissement et a été **mute automatiquement pendant 5 minutes** pour spam.", delete_after=10)
 
-    # Système de Niveaux / XP
+    # Système de Niveaux / XP corrigé et fiabilisé
     if user_id not in user_xp:
         user_xp[user_id] = {"xp": 0, "level": 1, "vocal_xp": 0}
 
@@ -286,9 +283,12 @@ async def on_message(message):
         user_xp[user_id]["level"] += 1
         new_lvl = user_xp[user_id]["level"]
         
-        # Envoi du message de niveau dans le salon dédié s'il est configuré (sans ping)
+        # Récupération du salon dédié ou repli sur le salon courant
         target_chan = message.guild.get_channel(server_configs["level_channel"]) if server_configs["level_channel"] else message.channel
-        if target_chan:
+        if not target_chan:
+            target_chan = message.channel
+
+        try:
             # Génération de la carte de niveau (PNG)
             card = Image.new("RGBA", (900, 300), (32, 34, 37, 255))
             draw = ImageDraw.Draw(card)
@@ -329,15 +329,15 @@ async def on_message(message):
             buffer.seek(0)
             file = discord.File(buffer, filename="rank_card.png")
 
-            # Envoi sans ping de l'utilisateur (affichage du nom en texte brut)
-            sent_msg = await target_chan.send(f"Bravo {message.author.display_name} vous êtes monté niveau {new_lvl}", file=file)
+            sent_msg = await target_chan.send(f"Bravo {message.author.display_name} vous êtes monté niveau {new_lvl} !", file=file)
             
-            # Suppression automatique du message au bout de 5 secondes
             await asyncio.sleep(5)
             try:
                 await sent_msg.delete()
             except:
                 pass
+        except Exception as e:
+            print(f"Erreur lors de l'envoi de la carte de niveau : {e}")
 
     await bot.process_commands(message)
 
@@ -406,7 +406,7 @@ async def on_command_error(ctx, error):
         raise error
 
 # ===========================================================
-# COMMANDE LEVEL / RANK
+# COMMANDES LEVEL / RANK / CONFIG
 # ===========================================================
 @bot.command(name="level", aliases=["profil", "su", "rank"], help="Affiche ta carte de niveau visuelle.")
 async def level(ctx, member: discord.Member = None):
@@ -470,10 +470,21 @@ async def topniveau(ctx):
     embed = discord.Embed(title="🏆 Classement des Niveaux", description=desc, color=discord.Color.gold())
     await ctx.send(embed=embed)
 
-@bot.command(name="niveauconfig", help="Configuration du système de niveaux.")
+@bot.command(name="niveauconfig", help="Affiche la configuration actuelle du système de niveaux.")
 @commands.has_permissions(administrator=True)
 async def niveauconfig(ctx):
-    await ctx.send("✅ Système de niveaux actif.")
+    chan_id = server_configs["level_channel"]
+    chan_mention = f"<#{chan_id}>" if chan_id else "❌ Non configuré (envoi dans le salon actif)"
+    
+    embed = discord.Embed(
+        title="📊 Configuration du Système de Niveaux",
+        color=discord.Color.from_rgb(88, 101, 242),
+        timestamp=datetime.utcnow()
+    )
+    embed.add_field(name="💬 Salon des annonces de niveaux", value=chan_mention, inline=False)
+    embed.add_field(name="⚙️ Comment modifier ?", value="Utilisez la commande `?salonlevel #salon` pour définir ou modifier le salon des annonces.", inline=False)
+    
+    await ctx.send(embed=embed)
 
 @bot.command(name="salonlevel", help="Définit le salon pour les annonces de niveaux. Utilisation : ?salonlevel #salon")
 @commands.has_permissions(administrator=True)
@@ -482,7 +493,7 @@ async def salonlevel(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Salon des niveaux configuré sur : {channel.mention}")
 
 # ===========================================================
-# SYSTÈME DE TICKETS (CRÉATION DANS LA MÊME CATÉGORIE)
+# SYSTÈME DE TICKETS
 # ===========================================================
 class TicketView(View):
     def __init__(self, panel_title: str):
@@ -644,7 +655,7 @@ async def ghostping(ctx):
     await ctx.send("✅ Module Anti-Ghost Ping actif.")
 
 # ===========================================================
-# COMMANDE GIVEAWAY DYNAMIQUE (AVEC CHOIX DU NOMBRE DE GAGNANTS)
+# COMMANDE GIVEAWAY DYNAMIQUE
 # ===========================================================
 @bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <temps> <lot> , <gagnants>")
 @commands.has_permissions(manage_guild=True)
@@ -655,7 +666,6 @@ async def giveaway(ctx, time_arg: str, *, content: str):
     if not duration:
         return await ctx.send("❌ Format de temps invalide ! Utilisez par exemple : `30s`, `15m`, `2h` ou `1j`.", delete_after=5)
     
-    # Sépare le lot et le nombre de gagnants par une virgule
     if "," in content:
         parts = content.split(",", 1)
         prize = parts[0].strip()
@@ -729,7 +739,7 @@ async def giveaway(ctx, time_arg: str, *, content: str):
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
 # ===========================================================
-# SYSTÈME DE RÔLES PAR RÉACTION (COMMANDE ?role)
+# SYSTÈME DE RÔLES PAR RÉACTION
 # ===========================================================
 class ReactionRoleView(View):
     def __init__(self, role_mappings):
@@ -788,7 +798,7 @@ async def role_command(ctx, *, args: str):
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
-# COMMANDES DE WARNS (?warn & ?warns)
+# COMMANDES DE WARNS
 # ===========================================================
 @bot.command(name="warn", help="Met un avertissement à un utilisateur. Utilisation : ?warn @Utilisateur <raison>")
 @commands.has_permissions(moderate_members=True)
@@ -807,7 +817,6 @@ async def warn(ctx, member: discord.Member, *, reason: str = "Aucune raison four
 
     await send_mod_log(ctx.guild, "⚠️ Action : Avertissement (Warn)", discord.Color.orange(), member, ctx.author, reason, sanction_type="Avertissement (Warn)")
 
-    # Message DM utilisateur mis à jour avec les embeds propres détaillés
     await send_sanction_dm(
         member,
         "⚠️ Avertissement reçu",
@@ -854,7 +863,7 @@ async def warns(ctx, member: discord.Member):
     await ctx.send(embed=embed)
 
 # ===========================================================
-# MODÉRATION & UTILS (AVEC EMBEDS DE SANCTION PROPRES EN MP)
+# MODÉRATION & UTILS
 # ===========================================================
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
@@ -1001,9 +1010,6 @@ async def dice(ctx, faces: int = 6):
 async def coinflip(ctx):
     await ctx.send(f"Pièce : **{random.choice(['Pile 🪙', 'Face 🪙'])}**")
 
-# ===========================================================
-# COMMANDE JOKE (10 VRAIES BLAGUES COMPLÈTES)
-# ===========================================================
 @bot.command(name="joke", help="Raconte une blague aléatoire.")
 async def joke(ctx):
     jokes_list = [
@@ -1018,7 +1024,6 @@ async def joke(ctx):
         ("Quel est le super-héros le plus écolo ?", "Le Concombre Masqué !"),
         ("C'est l'histoire d'un oeuf...", "Il fait 'tac' et il se casse !")
     ]
-    
     question, answer = random.choice(jokes_list)
     embed = discord.Embed(title="😂 Petite blague du jour", description=f"**Q :** {question}\n\n**R :** ||{answer}||", color=discord.Color.orange())
     embed.set_footer(text="Clique sur la réponse pour la découvrir !")
