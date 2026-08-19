@@ -209,14 +209,12 @@ async def level(ctx, member: discord.Member = None):
     vocal_xp = data["vocal_xp"]
     next_lvl_xp = lvl * 300
 
-    # Création de la carte image via Pillow (Correction : aucun argument 'format' non supporté)
     card = Image.new("RGBA", (900, 300), (32, 34, 37, 255))
     draw = ImageDraw.Draw(card)
 
     draw.rounded_rectangle([20, 20, 880, 280], radius=20, fill=(47, 49, 54, 255))
     draw.rounded_rectangle([40, 160, 860, 250], radius=10, fill=(54, 57, 63, 255))
 
-    # Barre de progression XP orange
     bar_width = 800
     current_progress = int((xp / next_lvl_xp) * bar_width) if next_lvl_xp > 0 else bar_width
     current_progress = min(max(current_progress, 20), bar_width)
@@ -313,7 +311,6 @@ class TicketCloseView(View):
     async def close_ticket(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message("🔒 Génération du transcript et fermeture du ticket...")
         
-        # Récupération de l'historique pour le fichier texte
         messages = [f"{m.author} [{m.created_at}]: {m.content}" async for m in interaction.channel.history(limit=None, oldest_first=True)]
         transcript = "\n".join(messages)
         file = discord.File(io.BytesIO(transcript.encode('utf-8')), filename=f"transcript-{interaction.channel.name}.txt")
@@ -493,13 +490,20 @@ async def giveaway(ctx, duration: int, *, prize: str):
         await ctx.send(f"❌ Personne n'a participé au giveaway pour **{prize}**.")
 
 # ===========================================================
-# MODÉRATION & UTILS
+# MODÉRATION & UTILS (Mis à jour : Embed + MP)
 # ===========================================================
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
+    embed = discord.Embed(title="🔨 Sanction : Bannissement", description=f"Vous avez été banni de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.red())
+    try:
+        await member.send(embed=embed)
+    except:
+        pass
     await member.ban(reason=reason)
-    await ctx.send(f"🔨 {member} banni.")
+    
+    public_embed = discord.Embed(title="🔨 Utilisateur banni", description=f"**{member}** a été banni.\n**Raison :** {reason}", color=discord.Color.red())
+    await ctx.send(embed=public_embed)
 
 @bot.command(name="unban")
 @commands.has_permissions(ban_members=True)
@@ -514,20 +518,42 @@ async def unban(ctx, *, user_input: str):
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
 async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
+    embed = discord.Embed(title="👢 Sanction : Expulsion", description=f"Vous avez été expulsé de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.orange())
+    try:
+        await member.send(embed=embed)
+    except:
+        pass
     await member.kick(reason=reason)
-    await ctx.send(f"👢 {member} expulsé.")
+    
+    public_embed = discord.Embed(title="👢 Utilisateur expulsé", description=f"**{member}** a été expulsé.\n**Raison :** {reason}", color=discord.Color.orange())
+    await ctx.send(embed=public_embed)
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
 async def mute(ctx, member: discord.Member, minutes: int, *, reason: str = "Aucune raison"):
     await member.timeout(timedelta(minutes=minutes), reason=reason)
-    await ctx.send(f"🔇 {member} mute pour {minutes} min.")
+    
+    embed = discord.Embed(title="🔇 Sanction : Mute (Timeout)", description=f"Vous avez été réduit au silence sur **{ctx.guild.name}** pour **{minutes} minute(s)**.\n**Raison :** {reason}", color=discord.Color.yellow())
+    try:
+        await member.send(embed=embed)
+    except:
+        pass
+        
+    public_embed = discord.Embed(title="🔇 Utilisateur mute", description=f"**{member}** a été mute pour {minutes} min.\n**Raison :** {reason}", color=discord.Color.yellow())
+    await ctx.send(embed=public_embed)
 
 @bot.command(name="unmute")
 @commands.has_permissions(moderate_members=True)
 async def unmute(ctx, member: discord.Member):
     await member.timeout(None)
-    await ctx.send(f"✅ {member} unmute.")
+    
+    embed = discord.Embed(title="✅ Fin de sanction", description=f"Vous avez été unmute sur **{ctx.guild.name}**.", color=discord.Color.green())
+    try:
+        await member.send(embed=embed)
+    except:
+        pass
+        
+    await ctx.send(f"✅ {member.mention} a été unmute.")
 
 @bot.command(name="clear")
 @commands.has_permissions(manage_messages=True)
