@@ -27,10 +27,15 @@ async def start_web_server():
 # STOCKAGE EN MÉMOIRE
 # ---------------------------------------------------------
 user_xp = {}          # {user_id: {"xp": 0, "level": 1, "vocal_xp": 0}}
+user_warns = {}       # {user_id: [{"moderator": id, "reason": "...", "date": "..."}]}
+spam_tracker = {}     # {user_id: [timestamp1, timestamp2, ...]}
+
 server_configs = {
     "welcome_channel": None,
     "autorole_id": None,
     "ticket_category_id": None,
+    "spam_limit": 5,        # Nombre de messages par défaut
+    "spam_time": 5,         # Dans un intervalle de x secondes par défaut
     "logs": {
         "mod": None,
         "message": None,
@@ -127,7 +132,7 @@ async def send_mod_log(guild, title, color, member, moderator, reason, duration=
     await chan.send(embed=embed)
 
 # ---------------------------------------------------------
-# HELP PERSONNALISÉ
+# HELP PERSONNALISÉ (COMMANDES À LA LIGNE)
 # ---------------------------------------------------------
 class MyHelp(commands.HelpCommand):
     async def send_bot_help(self, mapping):
@@ -148,19 +153,20 @@ class MyHelp(commands.HelpCommand):
             for c in commands_list:
                 if c.hidden:
                     continue
-                if c.name in ["ban", "unban", "kick", "mute", "unmute", "clear", "setup_logs", "giveaway", 
+                if c.name in ["ban", "unban", "kick", "mute", "unmute", "warn", "warns", "clear", "setup_logs", "giveaway", 
                               "autoconfiglog", "modlog", "messagelog", "voicelog", "rolelog", "raidlog", "ticketlog", 
-                              "welcome", "autorole", "niveauconfig", "ticketconfig", "say", "annonce"]:
+                              "welcome", "autorole", "niveauconfig", "ticketconfig", "say", "annonce", "role"]:
                     mod_cmds.append(f"`?{c.name}`")
                 elif c.name in ["8ball", "dice", "coinflip", "joke", "avatar", "hug", "slap", "rate"]:
                     fun_cmds.append(f"`?{c.name}`")
                 else:
                     general_cmds.append(f"`?{c.name}`")
 
-        embed.add_field(name="🎮 Commandes Membres & Niveaux", value=" ".join(general_cmds + fun_cmds), inline=False)
+        # Commandes à la ligne chacune
+        embed.add_field(name="🎮 Commandes Membres & Niveaux", value="\n".join(general_cmds + fun_cmds), inline=False)
         
         if is_mod:
-            embed.add_field(name="🛡️ Commandes de Modération & Configuration", value=" ".join(mod_cmds), inline=False)
+            embed.add_field(name="🛡️ Commandes de Modération & Configuration", value="\n".join(mod_cmds), inline=False)
             embed.set_footer(text="💡 Utilisez ?help <commande> pour voir les détails d'une commande.")
         else:
             embed.set_footer(text="🔒 Les commandes de modération sont masquées.")
@@ -195,14 +201,56 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
 
 # ---------------------------------------------------------
-# ÉVÉNEMENTS & LOGS FONCTIONNELS
+# ÉVÉNEMENTS & LOGS FONCTIONNELS (AVEC ANTI-SPAM)
 # ---------------------------------------------------------
 @bot.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author.bot or not message.guild:
         return
 
+    # Gestion de l'anti-spam automatique
     user_id = message.author.id
+    now_ts = datetime.utcnow().timestamp()
+    
+    if user_id not in spam_tracker:
+        spam_tracker[user_id] = []
+    
+    # Nettoyage des anciens messages hors de l'intervalle (ex: 5 secondes)
+    limit_time = server_configs["spam_time"]
+    spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now_ts - t < limit_time]
+    spam_tracker[user_id].append(now_ts)
+
+    if len(spam_tracker[user_id]) > server_configs["spam_limit"]:
+        # Spam détecté ! On applique un warn automatique s'il n'est pas admin
+        if not message.author.guild_permissions.administrator:
+            spam_tracker[user_id] = [] # Reset pour éviter le spam en boucle
+            
+            if user_id not in user_warns:
+                user_warns[user_id] = []
+            
+            warn_entry = {
+                "moderator": bot.user.id,
+                "reason": "Spam automatique détecté",
+                "date": datetime.utcnow().strftime("%d/%m/%Y à %H:%M")
+            }
+            user_warns[user_id].append(warn_entry)
+            warn_count = len(user_warns[user_id])
+
+            await send_mod_log(message.guild, "⚠️ Action : Avertissement Automatique (Anti-spam)", discord.Color.orange(), message.author, bot.user, f"Spam de {server_configs['spam_limit']} messages en {server_configs['spam_time']}s", sanction_type="Avertissement (Spam)")
+
+            if warn_count >= 3:
+                # Mute de 24h automatique au 3ème warn
+                duration_delta = timedelta(hours=24)
+                try:
+                    await message.author.timeout(duration_delta, reason="3ème avertissement (Anti-spam) : Mute automatique 24h")
+                except:
+                    pass
+                await send_mod_log(message.guild, "🔇 Action : Mute Automatique (24h)", discord.Color.gold(), message.author, bot.user, "Atteinte des 3 avertissements", duration="24h", sanction_type="Mute (Automatique)")
+                await message.channel.send(f"🔇 {message.author.mention} a été **mute automatiquement pendant 24h** pour avoir atteint 3 avertissements (Anti-spam).")
+            else:
+                await message.channel.send(f"⚠️ {message.author.mention} a reçu un avertissement automatique pour spam ({warn_count}/3).")
+
+    # Système de Niveaux / XP
     if user_id not in user_xp:
         user_xp[user_id] = {"xp": 0, "level": 1, "vocal_xp": 0}
 
@@ -368,10 +416,7 @@ class TicketView(View):
             guild.me: discord.PermissionOverwrite(read_messages=True)
         }
         
-        # Utilise la catégorie du salon actuel où le bouton a été cliqué
         category = interaction.channel.category
-
-        # Nettoyage du titre pour qu'il soit conforme aux noms de salons Discord (minuscules, tirets)
         clean_title = self.panel_title.lower().replace(" ", "-")
         channel_name = f"{clean_title}-{interaction.user.name}"
 
@@ -586,6 +631,148 @@ async def giveaway(ctx, time_arg: str, *, prize: str):
         await ctx.send(f"🎊 **Félicitations {winner.mention} !** Tu remportes le lot : **{prize}** ! 🎉")
     else:
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
+
+# ===========================================================
+# SYSTÈME DE RÔLES PAR RÉACTION (COMMANDE ?role)
+# ===========================================================
+class ReactionRoleView(View):
+    def __init__(self, role_mappings):
+        super().__init__(timeout=None)
+        # role_mappings est une liste de tuples/dictionnaires contenant (role, emoji)
+        for role, emoji in role_mappings:
+            self.add_item(ReactionRoleButton(role, emoji))
+
+class ReactionRoleButton(Button):
+    def __init__(self, role: discord.Role, emoji: str):
+        super().__init__(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji)
+        self.role = role
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = interaction.user
+        
+        # Vérifie si le membre a déjà le rôle
+        if self.role in member.roles:
+            await member.remove_roles(self.role)
+            await interaction.response.send_message(f"❌ Le rôle **{self.role.name}** vous a été retiré.", ephemeral=True)
+        else:
+            await member.add_roles(self.role)
+            await interaction.response.send_message(f"✅ Le rôle **{self.role.name}** vous a été attribué !", ephemeral=True)
+
+@bot.command(name="role", help="Crée un embed de rôles par réaction. Utilisation : ?role @role 🎨, @role 🎮")
+@commands.has_permissions(administrator=True)
+async def role_command(ctx, *, args: str):
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
+    # Sépare les arguments par des virgules
+    pairs = [p.strip() for p in args.split(",")]
+    role_mappings = []
+
+    for pair in pairs:
+        parts = pair.split()
+        if len(parts) < 2:
+            continue
+        role_mention = parts[0]
+        emoji = parts[1]
+
+        # Extrait l'ID du rôle depuis la mention (@role)
+        role_id_str = role_mention.replace("<@&", "").replace(">", "")
+        if role_id_str.isdigit():
+            role = ctx.guild.get_role(int(role_id_str))
+            if role:
+                role_mappings.append((role, emoji))
+
+    if not role_mappings:
+        return await ctx.send("❌ Format invalide ! Utilisez : `?role @MonRole 🎨, @MonAutreRole 🎮`", delete_after=10)
+
+    embed = discord.Embed(
+        title="🎭 Attribution de Rôles",
+        description="Cliquez sur les boutons ci-dessous pour obtenir ou retirer les rôles correspondants !",
+        color=discord.Color.from_rgb(88, 101, 242)
+    )
+    
+    view = ReactionRoleView(role_mappings)
+    await ctx.send(embed=embed, view=view)
+
+# ===========================================================
+# COMMANDES DE WARNS (?warn & ?warns)
+# ===========================================================
+@bot.command(name="warn", help="Met un avertissement à un utilisateur. Utilisation : ?warn @Utilisateur <raison>")
+@commands.has_permissions(moderate_members=True)
+async def warn(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
+    user_id = member.id
+    if user_id not in user_warns:
+        user_warns[user_id] = []
+
+    warn_entry = {
+        "moderator": ctx.author.id,
+        "reason": reason,
+        "date": datetime.utcnow().strftime("%d/%m/%Y à %H:%M")
+    }
+    user_warns[user_id].append(warn_entry)
+    warn_count = len(user_warns[user_id])
+
+    # Envoi log modération
+    await send_mod_log(ctx.guild, "⚠️ Action : Avertissement (Warn)", discord.Color.orange(), member, ctx.author, reason, sanction_type="Avertissement (Warn)")
+
+    # Message DM utilisateur
+    embed_dm = discord.Embed(
+        title="⚠️ Avertissement reçu",
+        description=f"Vous avez reçu un avertissement sur **{ctx.guild.name}**.\n**Raison :** {reason}\n**Total warns :** {warn_count}/3",
+        color=discord.Color.orange()
+    )
+    try:
+        await member.send(embed=embed_dm)
+    except:
+        pass
+
+    # Vérification si le total atteint ou dépasse 3 pour un mute automatique de 24h
+    if warn_count >= 3:
+        duration_delta = timedelta(hours=24)
+        try:
+            await member.timeout(duration_delta, reason="3ème avertissement atteint : Mute automatique 24h")
+        except:
+            pass
+        await send_mod_log(ctx.guild, "🔇 Action : Mute Automatique (24h)", discord.Color.gold(), member, bot.user, "Atteinte des 3 avertissements suite à un ?warn", duration="24h", sanction_type="Mute (Automatique)")
+        await ctx.send(f"⚠️ {member.mention} a reçu son avertissement (**{warn_count}/3**).\n🔇 *Le seuil de 3 warns étant atteint, il a été mute automatiquement pour 24h.*")
+    else:
+        public_embed = discord.Embed(
+            title="⚠️ Sanction Appliquée",
+            description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Avertissement (Warn)\n**Total :** {warn_count}/3\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+            color=discord.Color.orange(),
+            timestamp=datetime.utcnow()
+        )
+        await ctx.send(embed=public_embed)
+
+@bot.command(name="warns", help="Affiche les avertissements d'un utilisateur. Utilisation : ?warns @Utilisateur")
+@commands.has_permissions(moderate_members=True)
+async def warns(ctx, member: discord.Member):
+    user_id = member.id
+    history = user_warns.get(user_id, [])
+
+    if not history:
+        return await ctx.send(f"✅ {member.mention} n'a aucun avertissement à son actif.")
+
+    embed = discord.Embed(
+        title=f"📜 Avertissements de {member.display_name}",
+        color=discord.Color.orange(),
+        timestamp=datetime.utcnow()
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+
+    for i, w in enumerate(history, 1):
+        mod = ctx.guild.get_member(w["moderator"])
+        mod_name = mod.mention if mod else f"ID: {w['moderator']}"
+        embed.add_field(
+            name=f"Warn #{i} — {w['date']}",
+            value=f"📌 **Raison :** {w['reason']}\n🛡️ **Modérateur :** {mod_name}",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
 
 # ===========================================================
 # MODÉRATION & UTILS (AVEC EMBEDS DE SANCTION PROPRES)
