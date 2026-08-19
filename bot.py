@@ -32,6 +32,7 @@ spam_tracker = {}     # {user_id: [timestamp1, timestamp2, ...]}
 
 server_configs = {
     "welcome_channel": None,
+    "level_channel": None,  # Nouveau salon pour les niveaux
     "autorole_id": None,
     "ticket_category_id": None,
     "spam_limit": 5,        # Nombre de messages par défaut
@@ -131,6 +132,24 @@ async def send_mod_log(guild, title, color, member, moderator, reason, duration=
     
     await chan.send(embed=embed)
 
+# Fonction utilitaire pour envoyer les embeds de sanction en MP avec tous les détails demandés
+async def send_sanction_dm(member, title, description, color, duration, moderator, reason):
+    now = datetime.utcnow()
+    date_str = now.strftime("%d/%m/%Y")
+    heure_str = now.strftime("%H:%M:%S")
+
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
+    if duration:
+        embed.add_field(name="⏱️ Durée", value=format_duration(duration), inline=True)
+    embed.add_field(name="🛡️ Modérateur", value=f"{moderator} (`{moderator.id}`)", inline=True)
+    embed.add_field(name="📅 Date & Heure", value=f"Le {date_str} à {heure_str}", inline=False)
+    embed.add_field(name="📌 Raison", value=reason, inline=False)
+    
+    try:
+        await member.send(embed=embed)
+    except:
+        pass
+
 # ---------------------------------------------------------
 # HELP PERSONNALISÉ (COMMANDES À LA LIGNE)
 # ---------------------------------------------------------
@@ -155,14 +174,13 @@ class MyHelp(commands.HelpCommand):
                     continue
                 if c.name in ["ban", "unban", "kick", "mute", "unmute", "warn", "warns", "clear", "setup_logs", "giveaway", 
                               "autoconfiglog", "modlog", "messagelog", "voicelog", "rolelog", "raidlog", "ticketlog", 
-                              "welcome", "autorole", "niveauconfig", "ticketconfig", "say", "annonce", "role"]:
+                              "welcome", "autorole", "niveauconfig", "salonlevel", "ticketconfig", "say", "annonce", "role"]:
                     mod_cmds.append(f"`?{c.name}`")
                 elif c.name in ["8ball", "dice", "coinflip", "joke", "avatar", "hug", "slap", "rate"]:
                     fun_cmds.append(f"`?{c.name}`")
                 else:
                     general_cmds.append(f"`?{c.name}`")
 
-        # Commandes à la ligne chacune
         embed.add_field(name="🎮 Commandes Membres & Niveaux", value="\n".join(general_cmds + fun_cmds), inline=False)
         
         if is_mod:
@@ -201,27 +219,25 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
 
 # ---------------------------------------------------------
-# ÉVÉNEMENTS & LOGS FONCTIONNELS (AVEC ANTI-SPAM)
+# ÉVÉNEMENTS & LOGS FONCTIONNELS (AVEC ANTI-SPAM MIS À JOUR)
 # ---------------------------------------------------------
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
         return
 
-    # Gestion de l'anti-spam automatique
+    # Gestion de l'anti-spam automatique (Mute 5min + Warn automatique)
     user_id = message.author.id
     now_ts = datetime.utcnow().timestamp()
     
     if user_id not in spam_tracker:
         spam_tracker[user_id] = []
     
-    # Nettoyage des anciens messages hors de l'intervalle (ex: 5 secondes)
     limit_time = server_configs["spam_time"]
     spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now_ts - t < limit_time]
     spam_tracker[user_id].append(now_ts)
 
     if len(spam_tracker[user_id]) > server_configs["spam_limit"]:
-        # Spam détecté ! On applique un warn automatique s'il n'est pas admin
         if not message.author.guild_permissions.administrator:
             spam_tracker[user_id] = [] # Reset pour éviter le spam en boucle
             
@@ -236,19 +252,26 @@ async def on_message(message):
             user_warns[user_id].append(warn_entry)
             warn_count = len(user_warns[user_id])
 
-            await send_mod_log(message.guild, "⚠️ Action : Avertissement Automatique (Anti-spam)", discord.Color.orange(), message.author, bot.user, f"Spam de {server_configs['spam_limit']} messages en {server_configs['spam_time']}s", sanction_type="Avertissement (Spam)")
+            await send_mod_log(message.guild, "⚠️ Action : Avertissement Automatique & Mute (Anti-spam)", discord.Color.orange(), message.author, bot.user, f"Spam de {server_configs['spam_limit']} messages en {server_configs['spam_time']}s", duration="5m", sanction_type="Avertissement & Mute (Spam)")
 
-            if warn_count >= 3:
-                # Mute de 24h automatique au 3ème warn
-                duration_delta = timedelta(hours=24)
-                try:
-                    await message.author.timeout(duration_delta, reason="3ème avertissement (Anti-spam) : Mute automatique 24h")
-                except:
-                    pass
-                await send_mod_log(message.guild, "🔇 Action : Mute Automatique (24h)", discord.Color.gold(), message.author, bot.user, "Atteinte des 3 avertissements", duration="24h", sanction_type="Mute (Automatique)")
-                await message.channel.send(f"🔇 {message.author.mention} a été **mute automatiquement pendant 24h** pour avoir atteint 3 avertissements (Anti-spam).")
-            else:
-                await message.channel.send(f"⚠️ {message.author.mention} a reçu un avertissement automatique pour spam ({warn_count}/3).")
+            # Mute automatique de 5 minutes
+            try:
+                await message.author.timeout(timedelta(minutes=5), reason="Spam automatique : Mute 5 min")
+            except:
+                pass
+
+            # Notification en MP avec le nouvel embed détaillé
+            await send_sanction_dm(
+                message.author,
+                "⚠️ Sanction : Mute & Avertissement (Anti-spam)",
+                f"Vous avez été réduit au silence et averti sur **{message.guild.name}** pour spam.\n**Total warns :** {warn_count}",
+                discord.Color.orange(),
+                "5m",
+                bot.user,
+                "Spam automatique détecté"
+            )
+
+            await message.channel.send(f"🔇 {message.author.mention} a reçu un avertissement et a été **mute automatiquement pendant 5 minutes** pour spam.", delete_after=10)
 
     # Système de Niveaux / XP
     if user_id not in user_xp:
@@ -261,7 +284,60 @@ async def on_message(message):
 
     if current_xp >= next_level_xp:
         user_xp[user_id]["level"] += 1
-        await message.channel.send(f"🎉 Bravo {message.author.mention}, tu passes au **niveau {user_xp[user_id]['level']}** ! 🚀")
+        new_lvl = user_xp[user_id]["level"]
+        
+        # Envoi du message de niveau dans le salon dédié s'il est configuré (sans ping)
+        target_chan = message.guild.get_channel(server_configs["level_channel"]) if server_configs["level_channel"] else message.channel
+        if target_chan:
+            # Génération de la carte de niveau (PNG)
+            card = Image.new("RGBA", (900, 300), (32, 34, 37, 255))
+            draw = ImageDraw.Draw(card)
+            draw.rounded_rectangle([20, 20, 880, 280], radius=20, fill=(47, 49, 54, 255))
+            draw.rounded_rectangle([40, 160, 860, 250], radius=10, fill=(54, 57, 63, 255))
+
+            bar_width = 800
+            current_progress = int((current_xp / next_level_xp) * bar_width) if next_level_xp > 0 else bar_width
+            current_progress = min(max(current_progress, 20), bar_width)
+            draw.rounded_rectangle([50, 175, 50 + current_progress, 195], radius=8, fill=(235, 120, 30, 255))
+
+            try:
+                avatar_asset = message.author.display_avatar.replace(size=128, format="png")
+                avatar_bytes = await avatar_asset.read()
+                avatar_img = Image.open(io.BytesIO(avatar_bytes)).resize((100, 100))
+                mask = Image.new("L", (100, 100), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.ellipse((0, 0, 100, 100), fill=255)
+                card.paste(avatar_img, (50, 40), mask)
+            except Exception:
+                pass
+
+            try:
+                font_large = ImageFont.truetype("arial.ttf", 36)
+                font_small = ImageFont.truetype("arial.ttf", 20)
+            except IOError:
+                font_large = ImageFont.load_default()
+                font_small = ImageFont.load_default()
+
+            draw.text((170, 45), f"{message.author.display_name}", fill=(255, 255, 255), font=font_large)
+            draw.text((170, 95), f"Rang : #1  •  Niveau : {new_lvl}", fill=(180, 180, 180), font=font_small)
+            draw.text((70, 215), f"XP Total : {current_xp + user_xp[user_id]['vocal_xp']}", fill=(220, 220, 220), font=font_small)
+            draw.text((360, 215), f"XP Vocal : {user_xp[user_id]['vocal_xp']}", fill=(220, 220, 220), font=font_small)
+            draw.text((650, 215), f"Objectif : {next_lvl_xp} XP", fill=(220, 220, 220), font=font_small)
+
+            buffer = io.BytesIO()
+            card.save(buffer, format="PNG")
+            buffer.seek(0)
+            file = discord.File(buffer, filename="rank_card.png")
+
+            # Envoi sans ping de l'utilisateur (affichage du nom en texte brut)
+            sent_msg = await target_chan.send(f"Bravo {message.author.display_name} vous êtes monté niveau {new_lvl}", file=file)
+            
+            # Suppression automatique du message au bout de 5 secondes
+            await asyncio.sleep(5)
+            try:
+                await sent_msg.delete()
+            except:
+                pass
 
     await bot.process_commands(message)
 
@@ -398,6 +474,12 @@ async def topniveau(ctx):
 @commands.has_permissions(administrator=True)
 async def niveauconfig(ctx):
     await ctx.send("✅ Système de niveaux actif.")
+
+@bot.command(name="salonlevel", help="Définit le salon pour les annonces de niveaux. Utilisation : ?salonlevel #salon")
+@commands.has_permissions(administrator=True)
+async def salonlevel(ctx, channel: discord.TextChannel):
+    server_configs["level_channel"] = channel.id
+    await ctx.send(f"✅ Salon des niveaux configuré sur : {channel.mention}")
 
 # ===========================================================
 # SYSTÈME DE TICKETS (CRÉATION DANS LA MÊME CATÉGORIE)
@@ -562,17 +644,29 @@ async def ghostping(ctx):
     await ctx.send("✅ Module Anti-Ghost Ping actif.")
 
 # ===========================================================
-# COMMANDE GIVEAWAY DYNAMIQUE
+# COMMANDE GIVEAWAY DYNAMIQUE (AVEC CHOIX DU NOMBRE DE GAGNANTS)
 # ===========================================================
-@bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <durée ex: 1h/30m> <lot>")
+@bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <temps> <lot> , <gagnants>")
 @commands.has_permissions(manage_guild=True)
-async def giveaway(ctx, time_arg: str, *, prize: str):
+async def giveaway(ctx, time_arg: str, *, content: str):
     await ctx.message.delete()
     
     duration = convert_time(time_arg)
     if not duration:
         return await ctx.send("❌ Format de temps invalide ! Utilisez par exemple : `30s`, `15m`, `2h` ou `1j`.", delete_after=5)
     
+    # Sépare le lot et le nombre de gagnants par une virgule
+    if "," in content:
+        parts = content.split(",", 1)
+        prize = parts[0].strip()
+        try:
+            winners_count = int(parts[1].strip())
+        except ValueError:
+            winners_count = 1
+    else:
+        prize = content.strip()
+        winners_count = 1
+
     end_time = datetime.now() + timedelta(seconds=duration)
     end_str = end_time.strftime("%d/%m à %H:%M")
 
@@ -582,7 +676,7 @@ async def giveaway(ctx, time_arg: str, *, prize: str):
         color=discord.Color.from_rgb(88, 101, 242)
     )
     
-    box_content = f"• **Lot à gagner** : {prize}\n• **Participants** : 0\n• **Gagnant** : 1 tiré au sort"
+    box_content = f"• **Lot à gagner** : {prize}\n• **Participants** : 0\n• **Gagnant(s)** : {winners_count} tiré(s) au sort"
     embed.add_field(name="📊 Statistiques en direct", value=box_content, inline=False)
     embed.set_footer(text=f"🎁 Créé par @{ctx.author.name} • Fin prévue le {end_str}")
 
@@ -609,7 +703,7 @@ async def giveaway(ctx, time_arg: str, *, prize: str):
                         if not user.bot:
                             participants_count += 1
 
-            updated_box = f"• **Lot à gagner** : {prize}\n• **Participants** : {participants_count}\n• **Gagnant** : 1 tiré au sort"
+            updated_box = f"• **Lot à gagner** : {prize}\n• **Participants** : {participants_count}\n• **Gagnant(s)** : {winners_count} tiré(s) au sort"
             
             embed.clear_fields()
             embed.add_field(name="📊 Statistiques en direct", value=updated_box, inline=False)
@@ -627,8 +721,10 @@ async def giveaway(ctx, time_arg: str, *, prize: str):
                     participants.append(user)
 
     if participants:
-        winner = random.choice(participants)
-        await ctx.send(f"🎊 **Félicitations {winner.mention} !** Tu remportes le lot : **{prize}** ! 🎉")
+        actual_winners_count = min(winners_count, len(participants))
+        winners = random.sample(participants, actual_winners_count)
+        winners_mention = ", ".join([w.mention for w in winners])
+        await ctx.send(f"🎊 **Félicitations {winners_mention} !** Vous remportez le lot : **{prize}** ! 🎉")
     else:
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
@@ -638,7 +734,6 @@ async def giveaway(ctx, time_arg: str, *, prize: str):
 class ReactionRoleView(View):
     def __init__(self, role_mappings):
         super().__init__(timeout=None)
-        # role_mappings est une liste de tuples/dictionnaires contenant (role, emoji)
         for role, emoji in role_mappings:
             self.add_item(ReactionRoleButton(role, emoji))
 
@@ -648,10 +743,7 @@ class ReactionRoleButton(Button):
         self.role = role
 
     async def callback(self, interaction: discord.Interaction):
-        guild = interaction.guild
         member = interaction.user
-        
-        # Vérifie si le membre a déjà le rôle
         if self.role in member.roles:
             await member.remove_roles(self.role)
             await interaction.response.send_message(f"❌ Le rôle **{self.role.name}** vous a été retiré.", ephemeral=True)
@@ -667,7 +759,6 @@ async def role_command(ctx, *, args: str):
     except:
         pass
 
-    # Sépare les arguments par des virgules
     pairs = [p.strip() for p in args.split(",")]
     role_mappings = []
 
@@ -678,7 +769,6 @@ async def role_command(ctx, *, args: str):
         role_mention = parts[0]
         emoji = parts[1]
 
-        # Extrait l'ID du rôle depuis la mention (@role)
         role_id_str = role_mention.replace("<@&", "").replace(">", "")
         if role_id_str.isdigit():
             role = ctx.guild.get_role(int(role_id_str))
@@ -715,37 +805,26 @@ async def warn(ctx, member: discord.Member, *, reason: str = "Aucune raison four
     user_warns[user_id].append(warn_entry)
     warn_count = len(user_warns[user_id])
 
-    # Envoi log modération
     await send_mod_log(ctx.guild, "⚠️ Action : Avertissement (Warn)", discord.Color.orange(), member, ctx.author, reason, sanction_type="Avertissement (Warn)")
 
-    # Message DM utilisateur
-    embed_dm = discord.Embed(
-        title="⚠️ Avertissement reçu",
-        description=f"Vous avez reçu un avertissement sur **{ctx.guild.name}**.\n**Raison :** {reason}\n**Total warns :** {warn_count}/3",
-        color=discord.Color.orange()
+    # Message DM utilisateur mis à jour avec les embeds propres détaillés
+    await send_sanction_dm(
+        member,
+        "⚠️ Avertissement reçu",
+        f"Vous avez reçu un avertissement sur **{ctx.guild.name}**.\n**Total warns :** {warn_count}",
+        discord.Color.orange(),
+        None,
+        ctx.author,
+        reason
     )
-    try:
-        await member.send(embed=embed_dm)
-    except:
-        pass
 
-    # Vérification si le total atteint ou dépasse 3 pour un mute automatique de 24h
-    if warn_count >= 3:
-        duration_delta = timedelta(hours=24)
-        try:
-            await member.timeout(duration_delta, reason="3ème avertissement atteint : Mute automatique 24h")
-        except:
-            pass
-        await send_mod_log(ctx.guild, "🔇 Action : Mute Automatique (24h)", discord.Color.gold(), member, bot.user, "Atteinte des 3 avertissements suite à un ?warn", duration="24h", sanction_type="Mute (Automatique)")
-        await ctx.send(f"⚠️ {member.mention} a reçu son avertissement (**{warn_count}/3**).\n🔇 *Le seuil de 3 warns étant atteint, il a été mute automatiquement pour 24h.*")
-    else:
-        public_embed = discord.Embed(
-            title="⚠️ Sanction Appliquée",
-            description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Avertissement (Warn)\n**Total :** {warn_count}/3\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
-            color=discord.Color.orange(),
-            timestamp=datetime.utcnow()
-        )
-        await ctx.send(embed=public_embed)
+    public_embed = discord.Embed(
+        title="⚠️ Sanction Appliquée",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Avertissement (Warn)\n**Total :** {warn_count}\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        color=discord.Color.orange(),
+        timestamp=datetime.utcnow()
+    )
+    await ctx.send(embed=public_embed)
 
 @bot.command(name="warns", help="Affiche les avertissements d'un utilisateur. Utilisation : ?warns @Utilisateur")
 @commands.has_permissions(moderate_members=True)
@@ -775,16 +854,20 @@ async def warns(ctx, member: discord.Member):
     await ctx.send(embed=embed)
 
 # ===========================================================
-# MODÉRATION & UTILS (AVEC EMBEDS DE SANCTION PROPRES)
+# MODÉRATION & UTILS (AVEC EMBEDS DE SANCTION PROPRES EN MP)
 # ===========================================================
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
-    embed_dm = discord.Embed(title="🔨 Sanction : Bannissement", description=f"Vous avez été banni de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.red())
-    try:
-        await member.send(embed=embed_dm)
-    except:
-        pass
+    await send_sanction_dm(
+        member,
+        "🔨 Sanction : Bannissement",
+        f"Vous avez été banni de **{ctx.guild.name}**.",
+        discord.Color.red(),
+        None,
+        ctx.author,
+        reason
+    )
     await member.ban(reason=reason)
     
     await send_mod_log(ctx.guild, "🔨 Action : Bannissement", discord.Color.red(), member, ctx.author, reason, sanction_type="Bannissement")
@@ -811,11 +894,15 @@ async def unban(ctx, *, user_input: str):
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
 async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
-    embed_dm = discord.Embed(title="👢 Sanction : Expulsion", description=f"Vous avez été expulsé de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.orange())
-    try:
-        await member.send(embed=embed_dm)
-    except:
-        pass
+    await send_sanction_dm(
+        member,
+        "👢 Sanction : Expulsion",
+        f"Vous avez été expulsé de **{ctx.guild.name}**.",
+        discord.Color.orange(),
+        None,
+        ctx.author,
+        reason
+    )
     await member.kick(reason=reason)
     
     await send_mod_log(ctx.guild, "👢 Action : Expulsion", discord.Color.orange(), member, ctx.author, reason, sanction_type="Expulsion")
@@ -840,11 +927,15 @@ async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Auc
     
     readable_duration = format_duration(time_arg)
     
-    embed_dm = discord.Embed(title="🔇 Sanction : Mute (Timeout)", description=f"Vous avez été réduit au silence sur **{ctx.guild.name}** pour **{readable_duration}**.\n**Raison :** {reason}", color=discord.Color.gold())
-    try:
-        await member.send(embed=embed_dm)
-    except:
-        pass
+    await send_sanction_dm(
+        member,
+        "🔇 Sanction : Mute (Timeout)",
+        f"Vous avez été réduit au silence sur **{ctx.guild.name}**.",
+        discord.Color.gold(),
+        time_arg,
+        ctx.author,
+        reason
+    )
         
     await send_mod_log(ctx.guild, "🔇 Action : Mute / Timeout", discord.Color.gold(), member, ctx.author, reason, duration=time_arg, sanction_type="Mute (Timeout)")
         
@@ -861,11 +952,15 @@ async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Auc
 async def unmute(ctx, member: discord.Member):
     await member.timeout(None)
     
-    embed_dm = discord.Embed(title="✅ Fin de sanction", description=f"Votre exclusion temporaire a été levée sur **{ctx.guild.name}**.", color=discord.Color.green())
-    try:
-        await member.send(embed=embed_dm)
-    except:
-        pass
+    await send_sanction_dm(
+        member,
+        "✅ Fin de sanction",
+        f"Votre exclusion temporaire a été levée sur **{ctx.guild.name}**.",
+        discord.Color.green(),
+        None,
+        ctx.author,
+        "Levée du timeout manuelle"
+    )
         
     await send_mod_log(ctx.guild, "🔊 Action : Unmute", discord.Color.green(), member, ctx.author, "Levée du timeout manuelle", sanction_type="Unmute")
     await ctx.send(f"✅ {member.mention} a été unmute.")
