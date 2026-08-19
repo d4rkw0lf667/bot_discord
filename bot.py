@@ -270,7 +270,7 @@ async def on_message(message):
 
             await message.channel.send(f"🔇 {message.author.mention} a reçu un avertissement et a été **mute automatiquement pendant 5 minutes** pour spam.", delete_after=10)
 
-    # Système de Niveaux / XP corrigé et fiabilisé
+    # Système de Niveaux / XP
     if user_id not in user_xp:
         user_xp[user_id] = {"xp": 0, "level": 1, "vocal_xp": 0}
 
@@ -329,7 +329,7 @@ async def on_message(message):
             buffer.seek(0)
             file = discord.File(buffer, filename="rank_card.png")
 
-            sent_msg = await target_chan.send(f"Bravo {message.author.display_name} vous êtes monté niveau {new_lvl} !", file=file)
+            sent_msg = await target_chan.send(f"🎉 Bravo {message.author.mention}, tu passes au niveau **{new_lvl}** !", file=file)
             
             await asyncio.sleep(5)
             try:
