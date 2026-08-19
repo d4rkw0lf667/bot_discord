@@ -42,7 +42,7 @@ server_configs = {
 }
 
 # ---------------------------------------------------------
-# FONCTION UTILITAIRE : CONVERSION DE TEMPS (ex: 1h, 30m, 2j, 45s)
+# FONCTION UTILITAIRE : CONVERSION & FORMATAGE DU TEMPS
 # ---------------------------------------------------------
 def convert_time(time_str: str) -> int:
     time_str = time_str.lower()
@@ -68,15 +68,40 @@ def convert_time(time_str: str) -> int:
         else:
             return None
             
-    if number: # Si l'utilisateur met juste un nombre sans suffixe, on considère des secondes par défaut
+    if number:
         total_seconds += int(number)
         
     return total_seconds if total_seconds > 0 else None
 
+def format_duration(time_str: str) -> str:
+    """Convertit une chaîne courte (ex: 1h, 30m) en texte lisible (1 heure, 30 minutes)"""
+    time_str = time_str.lower()
+    number = ""
+    result = []
+    
+    for char in time_str:
+        if char.isdigit():
+            number += char
+        elif char in ['s', 'm', 'h', 'j']:
+            if not number:
+                continue
+            val = int(number)
+            if char == 's':
+                result.append(f"{val} seconde{'s' if val > 1 else ''}")
+            elif char == 'm':
+                result.append(f"{val} minute{'s' if val > 1 else ''}")
+            elif char == 'h':
+                result.append(f"{val} heure{'s' if val > 1 else ''}")
+            elif char == 'j':
+                result.append(f"{val} jour{'s' if val > 1 else ''}")
+            number = ""
+            
+    return " ".join(result) if result else time_str
+
 # ---------------------------------------------------------
-# FONCTION LOG MODÉRATION PERSONNALISÉE
+# FONCTION LOG MODÉRATION PERSONNALISÉE (EMBED PROPRE)
 # ---------------------------------------------------------
-async def send_mod_log(guild, title, color, member, moderator, reason, duration=None):
+async def send_mod_log(guild, title, color, member, moderator, reason, duration=None, sanction_type=None):
     log_id = server_configs["logs"]["mod"]
     if not log_id:
         return
@@ -84,13 +109,21 @@ async def send_mod_log(guild, title, color, member, moderator, reason, duration=
     if not chan:
         return
     
-    embed = discord.Embed(title=title, color=color, timestamp=datetime.utcnow())
-    embed.add_field(name="👤 Utilisateur", value=f"{member} (`{member.id}`)", inline=True)
-    embed.add_field(name="🛡️ Modérateur", value=f"{moderator.mention}", inline=True)
+    now = datetime.utcnow()
+    heure_str = now.strftime("%d/%m/%Y à %H:%M:%S")
+
+    embed = discord.Embed(title=title, color=color, timestamp=now)
+    embed.add_field(name="🎯 Sanction", value=sanction_type or title, inline=True)
+    embed.add_field(name="👤 Utilisateur sanctionné", value=f"{member} (`{member.id}`)", inline=True)
+    embed.add_field(name="🛡️ Modérateur", value=f"{moderator.mention} (`{moderator.id}`)", inline=False)
+    
     if duration:
-        embed.add_field(name="⏱️ Durée", value=duration, inline=True)
+        embed.add_field(name="⏱️ Durée", value=format_duration(duration), inline=True)
+        
+    embed.add_field(name="🕒 Heure", value=heure_str, inline=True)
     embed.add_field(name="📌 Raison", value=reason, inline=False)
     embed.set_footer(text=f"ID Serveur : {guild.id}")
+    
     await chan.send(embed=embed)
 
 # ---------------------------------------------------------
@@ -319,7 +352,7 @@ async def niveauconfig(ctx):
     await ctx.send("✅ Système de niveaux actif.")
 
 # ===========================================================
-# SYSTÈME DE TICKETS AVEC ARCHIVAGE TRANSCRIPT (.TXT)
+# SYSTÈME DE TICKETS (CRÉATION DANS LA MÊME CATÉGORIE)
 # ===========================================================
 class TicketView(View):
     def __init__(self):
@@ -334,8 +367,8 @@ class TicketView(View):
             guild.me: discord.PermissionOverwrite(read_messages=True)
         }
         
-        category_id = server_configs.get("ticket_category_id")
-        category = guild.get_channel(category_id) if category_id else None
+        # Utilise la catégorie du salon actuel où le bouton a été cliqué
+        category = interaction.channel.category
 
         ticket_channel = await guild.create_text_channel(
             f"ticket-{interaction.user.name}",
@@ -415,7 +448,7 @@ async def autoconfiglog(ctx):
     c6 = await guild.create_text_channel("🎫・logs-tickets", category=category, overwrites=overwrites)
 
     server_configs["logs"] = {"mod": c1.id, "message": c2.id, "voice": c3.id, "role": c4.id, "raid": c5.id, "ticket": c6.id}
-    await ctx.send("✅ Salons de logs et catégorie de tickets créés avec succès !")
+    await ctx.send("✅ Salons de logs et catégorie créés avec succès !")
 
 @bot.command(name="modlog")
 @commands.has_permissions(administrator=True)
@@ -474,7 +507,7 @@ async def ghostping(ctx):
     await ctx.send("✅ Module Anti-Ghost Ping actif.")
 
 # ===========================================================
-# COMMANDE GIVEAWAY DYNAMIQUE (DESIGN UNIQUE & TEMPS FLEXIBLE)
+# COMMANDE GIVEAWAY DYNAMIQUE
 # ===========================================================
 @bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <durée ex: 1h/30m> <lot>")
 @commands.has_permissions(manage_guild=True)
@@ -545,21 +578,26 @@ async def giveaway(ctx, time_arg: str, *, prize: str):
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
 # ===========================================================
-# MODÉRATION & UTILS (AVEC LOGS DÉTAILLÉS & TEMPS FLEXIBLE)
+# MODÉRATION & UTILS (AVEC EMBEDS DE SANCTION PROPRES)
 # ===========================================================
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
-    embed = discord.Embed(title="🔨 Sanction : Bannissement", description=f"Vous avez été banni de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.red())
+    embed_dm = discord.Embed(title="🔨 Sanction : Bannissement", description=f"Vous avez été banni de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.red())
     try:
-        await member.send(embed=embed)
+        await member.send(embed=embed_dm)
     except:
         pass
     await member.ban(reason=reason)
     
-    await send_mod_log(ctx.guild, "🔨 Action : Bannissement", discord.Color.red(), member, ctx.author, reason)
+    await send_mod_log(ctx.guild, "🔨 Action : Bannissement", discord.Color.red(), member, ctx.author, reason, sanction_type="Bannissement")
     
-    public_embed = discord.Embed(title="🔨 Utilisateur banni", description=f"**{member}** a été banni.\n**Raison :** {reason}", color=discord.Color.red())
+    public_embed = discord.Embed(
+        title="🔨 Sanction Appliquée",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Bannissement\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        color=discord.Color.red(),
+        timestamp=datetime.utcnow()
+    )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="unban")
@@ -569,23 +607,28 @@ async def unban(ctx, *, user_input: str):
     for entry in banned:
         if str(entry.user.id) == user_input or str(entry.user) == user_input:
             await ctx.guild.unban(entry.user)
-            await send_mod_log(ctx.guild, "🔓 Action : Débannissement", discord.Color.green(), entry.user, ctx.author, "Débannissement manuel")
+            await send_mod_log(ctx.guild, "🔓 Action : Débannissement", discord.Color.green(), entry.user, ctx.author, "Débannissement manuel", sanction_type="Débannissement")
             return await ctx.send(f"🔓 {entry.user} débanni.")
     await ctx.send("❌ Utilisateur introuvable.")
 
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
 async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
-    embed = discord.Embed(title="👢 Sanction : Expulsion", description=f"Vous avez été expulsé de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.orange())
+    embed_dm = discord.Embed(title="👢 Sanction : Expulsion", description=f"Vous avez été expulsé de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.orange())
     try:
-        await member.send(embed=embed)
+        await member.send(embed=embed_dm)
     except:
         pass
     await member.kick(reason=reason)
     
-    await send_mod_log(ctx.guild, "👢 Action : Expulsion", discord.Color.orange(), member, ctx.author, reason)
+    await send_mod_log(ctx.guild, "👢 Action : Expulsion", discord.Color.orange(), member, ctx.author, reason, sanction_type="Expulsion")
     
-    public_embed = discord.Embed(title="👢 Utilisateur expulsé", description=f"**{member}** a été expulsé.\n**Raison :** {reason}", color=discord.Color.orange())
+    public_embed = discord.Embed(
+        title="👢 Sanction Appliquée",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Expulsion\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        color=discord.Color.orange(),
+        timestamp=datetime.utcnow()
+    )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="mute")
@@ -598,15 +641,22 @@ async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Auc
     duration_delta = timedelta(seconds=seconds)
     await member.timeout(duration_delta, reason=reason)
     
-    embed = discord.Embed(title="🔇 Sanction : Mute (Timeout)", description=f"Vous avez été réduit au silence sur **{ctx.guild.name}** pour **{time_arg}**.\n**Raison :** {reason}", color=discord.Color.gold())
+    readable_duration = format_duration(time_arg)
+    
+    embed_dm = discord.Embed(title="🔇 Sanction : Mute (Timeout)", description=f"Vous avez été réduit au silence sur **{ctx.guild.name}** pour **{readable_duration}**.\n**Raison :** {reason}", color=discord.Color.gold())
     try:
-        await member.send(embed=embed)
+        await member.send(embed=embed_dm)
     except:
         pass
         
-    await send_mod_log(ctx.guild, "🔇 Action : Mute / Timeout", discord.Color.gold(), member, ctx.author, reason, duration=time_arg)
+    await send_mod_log(ctx.guild, "🔇 Action : Mute / Timeout", discord.Color.gold(), member, ctx.author, reason, duration=time_arg, sanction_type="Mute (Timeout)")
         
-    public_embed = discord.Embed(title="🔇 Utilisateur mute", description=f"**{member}** a été mute pour **{time_arg}**.\n**Raison :** {reason}", color=discord.Color.gold())
+    public_embed = discord.Embed(
+        title="🔇 Sanction Appliquée",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Mute (Timeout)\n**Durée :** {readable_duration}\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow()
+    )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="unmute")
@@ -614,13 +664,13 @@ async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Auc
 async def unmute(ctx, member: discord.Member):
     await member.timeout(None)
     
-    embed = discord.Embed(title="✅ Fin de sanction", description=f"Votre exclusion temporaire a été levée sur **{ctx.guild.name}**.", color=discord.Color.green())
+    embed_dm = discord.Embed(title="✅ Fin de sanction", description=f"Votre exclusion temporaire a été levée sur **{ctx.guild.name}**.", color=discord.Color.green())
     try:
-        await member.send(embed=embed)
+        await member.send(embed=embed_dm)
     except:
         pass
         
-    await send_mod_log(ctx.guild, "🔊 Action : Unmute", discord.Color.green(), member, ctx.author, "Levée du timeout manuelle")
+    await send_mod_log(ctx.guild, "🔊 Action : Unmute", discord.Color.green(), member, ctx.author, "Levée du timeout manuelle", sanction_type="Unmute")
     await ctx.send(f"✅ {member.mention} a été unmute.")
 
 @bot.command(name="clear")
@@ -668,13 +718,13 @@ async def joke(ctx):
         ("Pourquoi les plongeurs plongent-ils toujours en arrière et jamais en avant ?", "Parce que sinon ils tombent quand même dans le bateau !"),
         ("Quel est le comble pour un electricien ?", "De ne pas être au courant !"),
         ("Que fait un poussin qui veut faire caca ?", "Poussin piou piou... Non, il pousse !"),
-        ("C'est l'histoire d'un أبو (ou d'un pingouin)...", "Il est tellement froid qu'il gèle l'ambiance ! (Blague courte : Pourquoi les canards sont toujours à l'heure ? Parce qu'ils sont dans l'étang !"),
+        ("C'est l'histoire d'un pingouin...", "Il est tellement froid qu'il gèle l'ambiance !"),
         ("Quel est le comble pour un jardinier ?", "De raconter des salades !"),
         ("Pourquoi les oiseaux volent-ils vers le sud en hiver ?", "Parce que c'est trop long d'y aller à pied !"),
-        ("Qu'est-ce qu'un squellette dans un placard ?", "Quelqu'un qui a gagné a cache-cache il y a très, très longtemps."),
+        ("Qu'est-ce qu'un squelette dans un placard ?", "Quelqu'un qui a gagné à cache-cache il y a très, très longtemps."),
         ("Pourquoi les belges mettent-ils leur frigo sur le balcon ?", "Pour faire des glaçons en hiver !"),
         ("Quel est le super-héros le plus écolo ?", "Le Concombre Masqué !"),
-        ("C'est l'histoire d'un o(u)f...", "Il fait 'tac' et il se casse !")
+        ("C'est l'histoire d'un oeuf...", "Il fait 'tac' et il se casse !")
     ]
     
     question, answer = random.choice(jokes_list)
