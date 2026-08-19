@@ -42,6 +42,58 @@ server_configs = {
 }
 
 # ---------------------------------------------------------
+# FONCTION UTILITAIRE : CONVERSION DE TEMPS (ex: 1h, 30m, 2j, 45s)
+# ---------------------------------------------------------
+def convert_time(time_str: str) -> int:
+    time_str = time_str.lower()
+    total_seconds = 0
+    number = ""
+    
+    for char in time_str:
+        if char.isdigit():
+            number += char
+        elif char in ['s', 'm', 'h', 'j']:
+            if not number:
+                return None
+            val = int(number)
+            if char == 's':
+                total_seconds += val
+            elif char == 'm':
+                total_seconds += val * 60
+            elif char == 'h':
+                total_seconds += val * 3600
+            elif char == 'j':
+                total_seconds += val * 86400
+            number = ""
+        else:
+            return None
+            
+    if number: # Si l'utilisateur met juste un nombre sans suffixe, on considère des secondes par défaut
+        total_seconds += int(number)
+        
+    return total_seconds if total_seconds > 0 else None
+
+# ---------------------------------------------------------
+# FONCTION LOG MODÉRATION PERSONNALISÉE
+# ---------------------------------------------------------
+async def send_mod_log(guild, title, color, member, moderator, reason, duration=None):
+    log_id = server_configs["logs"]["mod"]
+    if not log_id:
+        return
+    chan = guild.get_channel(log_id)
+    if not chan:
+        return
+    
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.utcnow())
+    embed.add_field(name="👤 Utilisateur", value=f"{member} (`{member.id}`)", inline=True)
+    embed.add_field(name="🛡️ Modérateur", value=f"{moderator.mention}", inline=True)
+    if duration:
+        embed.add_field(name="⏱️ Durée", value=duration, inline=True)
+    embed.add_field(name="📌 Raison", value=reason, inline=False)
+    embed.set_footer(text=f"ID Serveur : {guild.id}")
+    await chan.send(embed=embed)
+
+# ---------------------------------------------------------
 # HELP PERSONNALISÉ
 # ---------------------------------------------------------
 class MyHelp(commands.HelpCommand):
@@ -117,7 +169,6 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # XP Messages (Gain ralenti : 5 à 10 XP, palier à 300)
     user_id = message.author.id
     if user_id not in user_xp:
         user_xp[user_id] = {"xp": 0, "level": 1, "vocal_xp": 0}
@@ -198,7 +249,7 @@ async def on_command_error(ctx, error):
         raise error
 
 # ===========================================================
-# COMMANDE LEVEL / RANK (CORRIGÉE SANS ERREUR PILLOW)
+# COMMANDE LEVEL / RANK
 # ===========================================================
 @bot.command(name="level", aliases=["profil", "su", "rank"], help="Affiche ta carte de niveau visuelle.")
 async def level(ctx, member: discord.Member = None):
@@ -423,25 +474,29 @@ async def ghostping(ctx):
     await ctx.send("✅ Module Anti-Ghost Ping actif.")
 
 # ===========================================================
-# COMMANDE GIVEAWAY DYNAMIQUE (COMPTE À REBOURS LIVE)
+# COMMANDE GIVEAWAY DYNAMIQUE (DESIGN UNIQUE & TEMPS FLEXIBLE)
 # ===========================================================
-@bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <durée en secondes> <lot>")
+@bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <durée ex: 1h/30m> <lot>")
 @commands.has_permissions(manage_guild=True)
-async def giveaway(ctx, duration: int, *, prize: str):
+async def giveaway(ctx, time_arg: str, *, prize: str):
     await ctx.message.delete()
     
+    duration = convert_time(time_arg)
+    if not duration:
+        return await ctx.send("❌ Format de temps invalide ! Utilisez par exemple : `30s`, `15m`, `2h` ou `1j`.", delete_after=5)
+    
     end_time = datetime.now() + timedelta(seconds=duration)
-    end_str = end_time.strftime("%A à %H:%M")
+    end_str = end_time.strftime("%d/%m à %H:%M")
 
     embed = discord.Embed(
-        title=f"🎉 {prize}",
-        description="Réagis avec 🎉 pour participer !",
-        color=discord.Color.from_rgb(47, 49, 54)
+        title=f"🎁 G I V E A W A Y • {prize}",
+        description="✨ **Tentez votre chance !** ✨\nCliquez sur l'émoji ci-dessous pour valider votre participation au tirage au sort.",
+        color=discord.Color.from_rgb(88, 101, 242)
     )
     
-    box_content = f"```\n┌─────────────────────────────┐\n│        INFORMATIONS         │\n├─────────────────────────────┤\n│  Gagnant(s)  : 1            │\n│  Participants: 0            │\n└─────────────────────────────┘\n```"
-    embed.add_field(name="", value=box_content, inline=False)
-    embed.set_footer(text=f"Organisé par : @{ctx.author.name} • Fin : {end_str}")
+    box_content = f"• **Lot à gagner** : {prize}\n• **Participants** : 0\n• **Gagnant** : 1 tiré au sort"
+    embed.add_field(name="📊 Statistiques en direct", value=box_content, inline=False)
+    embed.set_footer(text=f"🎁 Créé par @{ctx.author.name} • Fin prévue le {end_str}")
 
     msg = await ctx.send(embed=embed)
     await msg.add_reaction("🎉")
@@ -455,7 +510,7 @@ async def giveaway(ctx, duration: int, *, prize: str):
         
         mins = remaining // 60
         secs = remaining % 60
-        countdown_text = f"Fin dans : {mins}min {secs}s ({end_str})" if remaining > 0 else "Terminé !"
+        countdown_text = f"Fin dans : {mins}m {secs}s" if remaining > 0 else "Terminé !"
 
         try:
             fetched_msg = await ctx.channel.fetch_message(msg.id)
@@ -466,11 +521,11 @@ async def giveaway(ctx, duration: int, *, prize: str):
                         if not user.bot:
                             participants_count += 1
 
-            updated_box = f"```\n┌─────────────────────────────┐\n│        INFORMATIONS         │\n├─────────────────────────────┤\n│  Gagnant(s)  : 1            │\n│  Participants: {participants_count:<12} │\n└─────────────────────────────┘\n```"
+            updated_box = f"• **Lot à gagner** : {prize}\n• **Participants** : {participants_count}\n• **Gagnant** : 1 tiré au sort"
             
             embed.clear_fields()
-            embed.add_field(name="", value=updated_box, inline=False)
-            embed.set_footer(text=f"Organisé par : @{ctx.author.name} • Fin : {countdown_text}")
+            embed.add_field(name="📊 Statistiques en direct", value=updated_box, inline=False)
+            embed.set_footer(text=f"🎁 Créé par @{ctx.author.name} • {countdown_text}")
             await fetched_msg.edit(embed=embed)
         except:
             break
@@ -485,22 +540,24 @@ async def giveaway(ctx, duration: int, *, prize: str):
 
     if participants:
         winner = random.choice(participants)
-        await ctx.send(f"🎊 Félicitations {winner.mention} ! Tu remportes **{prize}** !")
+        await ctx.send(f"🎊 **Félicitations {winner.mention} !** Tu remportes le lot : **{prize}** ! 🎉")
     else:
-        await ctx.send(f"❌ Personne n'a participé au giveaway pour **{prize}**.")
+        await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
 # ===========================================================
-# MODÉRATION & UTILS (Mis à jour : Embed + MP)
+# MODÉRATION & UTILS (AVEC LOGS DÉTAILLÉS & TEMPS FLEXIBLE)
 # ===========================================================
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
-async def ban(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
+async def ban(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
     embed = discord.Embed(title="🔨 Sanction : Bannissement", description=f"Vous avez été banni de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.red())
     try:
         await member.send(embed=embed)
     except:
         pass
     await member.ban(reason=reason)
+    
+    await send_mod_log(ctx.guild, "🔨 Action : Bannissement", discord.Color.red(), member, ctx.author, reason)
     
     public_embed = discord.Embed(title="🔨 Utilisateur banni", description=f"**{member}** a été banni.\n**Raison :** {reason}", color=discord.Color.red())
     await ctx.send(embed=public_embed)
@@ -512,12 +569,13 @@ async def unban(ctx, *, user_input: str):
     for entry in banned:
         if str(entry.user.id) == user_input or str(entry.user) == user_input:
             await ctx.guild.unban(entry.user)
+            await send_mod_log(ctx.guild, "🔓 Action : Débannissement", discord.Color.green(), entry.user, ctx.author, "Débannissement manuel")
             return await ctx.send(f"🔓 {entry.user} débanni.")
     await ctx.send("❌ Utilisateur introuvable.")
 
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
-async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
+async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
     embed = discord.Embed(title="👢 Sanction : Expulsion", description=f"Vous avez été expulsé de **{ctx.guild.name}**.\n**Raison :** {reason}", color=discord.Color.orange())
     try:
         await member.send(embed=embed)
@@ -525,21 +583,30 @@ async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
         pass
     await member.kick(reason=reason)
     
+    await send_mod_log(ctx.guild, "👢 Action : Expulsion", discord.Color.orange(), member, ctx.author, reason)
+    
     public_embed = discord.Embed(title="👢 Utilisateur expulsé", description=f"**{member}** a été expulsé.\n**Raison :** {reason}", color=discord.Color.orange())
     await ctx.send(embed=public_embed)
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
-async def mute(ctx, member: discord.Member, minutes: int, *, reason: str = "Aucune raison"):
-    await member.timeout(timedelta(minutes=minutes), reason=reason)
+async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Aucune raison fournie"):
+    seconds = convert_time(time_arg)
+    if not seconds:
+        return await ctx.send("❌ Format de temps invalide pour le mute ! Utilisez par exemple : `10m`, `1h`, `2j`.", delete_after=5)
     
-    embed = discord.Embed(title="🔇 Sanction : Mute (Timeout)", description=f"Vous avez été réduit au silence sur **{ctx.guild.name}** pour **{minutes} minute(s)**.\n**Raison :** {reason}", color=discord.Color.yellow())
+    duration_delta = timedelta(seconds=seconds)
+    await member.timeout(duration_delta, reason=reason)
+    
+    embed = discord.Embed(title="🔇 Sanction : Mute (Timeout)", description=f"Vous avez été réduit au silence sur **{ctx.guild.name}** pour **{time_arg}**.\n**Raison :** {reason}", color=discord.Color.gold())
     try:
         await member.send(embed=embed)
     except:
         pass
         
-    public_embed = discord.Embed(title="🔇 Utilisateur mute", description=f"**{member}** a été mute pour {minutes} min.\n**Raison :** {reason}", color=discord.Color.yellow())
+    await send_mod_log(ctx.guild, "🔇 Action : Mute / Timeout", discord.Color.gold(), member, ctx.author, reason, duration=time_arg)
+        
+    public_embed = discord.Embed(title="🔇 Utilisateur mute", description=f"**{member}** a été mute pour **{time_arg}**.\n**Raison :** {reason}", color=discord.Color.gold())
     await ctx.send(embed=public_embed)
 
 @bot.command(name="unmute")
@@ -547,12 +614,13 @@ async def mute(ctx, member: discord.Member, minutes: int, *, reason: str = "Aucu
 async def unmute(ctx, member: discord.Member):
     await member.timeout(None)
     
-    embed = discord.Embed(title="✅ Fin de sanction", description=f"Vous avez été unmute sur **{ctx.guild.name}**.", color=discord.Color.green())
+    embed = discord.Embed(title="✅ Fin de sanction", description=f"Votre exclusion temporaire a été levée sur **{ctx.guild.name}**.", color=discord.Color.green())
     try:
         await member.send(embed=embed)
     except:
         pass
         
+    await send_mod_log(ctx.guild, "🔊 Action : Unmute", discord.Color.green(), member, ctx.author, "Levée du timeout manuelle")
     await ctx.send(f"✅ {member.mention} a été unmute.")
 
 @bot.command(name="clear")
@@ -591,9 +659,28 @@ async def dice(ctx, faces: int = 6):
 async def coinflip(ctx):
     await ctx.send(f"Pièce : **{random.choice(['Pile 🪙', 'Face 🪙'])}**")
 
-@bot.command(name="joke")
+# ===========================================================
+# COMMANDE JOKE (10 VRAIES BLAGUES COMPLÈTES)
+# ===========================================================
+@bot.command(name="joke", help="Raconte une blague aléatoire.")
 async def joke(ctx):
-    await ctx.send(f"😂 Pourquoi les plongeurs plongent en arrière ? ...")
+    jokes_list = [
+        ("Pourquoi les plongeurs plongent-ils toujours en arrière et jamais en avant ?", "Parce que sinon ils tombent quand même dans le bateau !"),
+        ("Quel est le comble pour un electricien ?", "De ne pas être au courant !"),
+        ("Que fait un poussin qui veut faire caca ?", "Poussin piou piou... Non, il pousse !"),
+        ("C'est l'histoire d'un أبو (ou d'un pingouin)...", "Il est tellement froid qu'il gèle l'ambiance ! (Blague courte : Pourquoi les canards sont toujours à l'heure ? Parce qu'ils sont dans l'étang !"),
+        ("Quel est le comble pour un jardinier ?", "De raconter des salades !"),
+        ("Pourquoi les oiseaux volent-ils vers le sud en hiver ?", "Parce que c'est trop long d'y aller à pied !"),
+        ("Qu'est-ce qu'un squellette dans un placard ?", "Quelqu'un qui a gagné a cache-cache il y a très, très longtemps."),
+        ("Pourquoi les belges mettent-ils leur frigo sur le balcon ?", "Pour faire des glaçons en hiver !"),
+        ("Quel est le super-héros le plus écolo ?", "Le Concombre Masqué !"),
+        ("C'est l'histoire d'un o(u)f...", "Il fait 'tac' et il se casse !")
+    ]
+    
+    question, answer = random.choice(jokes_list)
+    embed = discord.Embed(title="😂 Petite blague du jour", description=f"**Q :** {question}\n\n**R :** ||{answer}||", color=discord.Color.orange())
+    embed.set_footer(text="Clique sur la réponse pour la découvrir !")
+    await ctx.send(embed=embed)
 
 @bot.command(name="avatar")
 async def avatar(ctx, member: discord.Member = None):
