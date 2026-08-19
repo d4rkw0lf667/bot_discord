@@ -355,8 +355,9 @@ async def niveauconfig(ctx):
 # SYSTÈME DE TICKETS (CRÉATION DANS LA MÊME CATÉGORIE)
 # ===========================================================
 class TicketView(View):
-    def __init__(self):
+    def __init__(self, panel_title: str):
         super().__init__(timeout=None)
+        self.panel_title = panel_title
 
     @discord.ui.button(label="Create ticket", style=discord.ButtonStyle.secondary, emoji="📩", custom_id="create_ticket_btn")
     async def create_ticket(self, interaction: discord.Interaction, button: Button):
@@ -370,8 +371,12 @@ class TicketView(View):
         # Utilise la catégorie du salon actuel où le bouton a été cliqué
         category = interaction.channel.category
 
+        # Nettoyage du titre pour qu'il soit conforme aux noms de salons Discord (minuscules, tirets)
+        clean_title = self.panel_title.lower().replace(" ", "-")
+        channel_name = f"{clean_title}-{interaction.user.name}"
+
         ticket_channel = await guild.create_text_channel(
-            f"ticket-{interaction.user.name}",
+            channel_name,
             category=category,
             overwrites=overwrites
         )
@@ -412,17 +417,22 @@ class TicketCloseView(View):
         await asyncio.sleep(3)
         await interaction.channel.delete()
 
-@bot.command(name="ticketconfig", help="Crée le panneau de création de tickets avec bouton.")
+@bot.command(name="ticketconfig", help="Crée le panneau de création de tickets. Utilisation : ?ticketconfig <titre> <description>")
 @commands.has_permissions(administrator=True)
-async def ticketconfig(ctx):
+async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = "To create a ticket use the Create ticket button"):
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
     embed = discord.Embed(
-        title="New Panel (1)",
-        description="To create a ticket use the Create ticket button",
+        title=title,
+        description=description,
         color=discord.Color.from_rgb(46, 204, 113)
     )
     embed.set_footer(text="Ticketing system • Sécurisé")
     
-    view = TicketView()
+    view = TicketView(panel_title=title)
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
