@@ -283,7 +283,6 @@ async def on_message(message):
         user_xp[user_id]["level"] += 1
         new_lvl = user_xp[user_id]["level"]
         
-        # CORRECTION ICI : Récupération correcte du salon configuré pour les niveaux
         target_chan = None
         if server_configs["level_channel"]:
             target_chan = message.guild.get_channel(server_configs["level_channel"])
@@ -292,7 +291,6 @@ async def on_message(message):
             target_chan = message.channel
 
         try:
-            # Génération de la carte de niveau (PNG)
             card = Image.new("RGBA", (900, 300), (32, 34, 37, 255))
             draw = ImageDraw.Draw(card)
             draw.rounded_rectangle([20, 20, 880, 280], radius=20, fill=(47, 49, 54, 255))
@@ -496,7 +494,7 @@ async def salonlevel(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Salon des niveaux configuré sur : {channel.mention}")
 
 # ===========================================================
-# SYSTÈME DE TICKETS
+# SYSTÈME DE TICKETS (Corrigé pour perms admin/mod & mentions)
 # ===========================================================
 class TicketView(View):
     def __init__(self, panel_title: str):
@@ -506,11 +504,21 @@ class TicketView(View):
     @discord.ui.button(label="Create ticket", style=discord.ButtonStyle.secondary, emoji="📩", custom_id="create_ticket_btn")
     async def create_ticket(self, interaction: discord.Interaction, button: Button):
         guild = interaction.guild
+        
+        # Permissions de base : Bloqué pour tout le monde, accessible pour l'auteur et le bot
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True)
         }
+        
+        # Ajout automatique des permissions de lecture/écriture pour tous les rôles mod/admin du serveur
+        staff_mentions = []
+        for role in guild.roles:
+            if role.permissions.administrator or role.permissions.manage_messages or role.permissions.moderate_members:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                if not role.is_default() and role.mention not in staff_mentions:
+                    staff_mentions.append(role.mention)
         
         category = interaction.channel.category
         clean_title = self.panel_title.lower().replace(" ", "-")
@@ -531,7 +539,14 @@ class TicketView(View):
         await interaction.response.send_message(f"✅ Votre ticket a été créé ici : {ticket_channel.mention}", ephemeral=True)
 
         close_view = TicketCloseView()
-        await ticket_channel.send(f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un membre du staff vous répondra.", view=close_view)
+        
+        # Construction du message d'accueil avec mention des rôles modérateurs/admins s'ils existent
+        staff_ping_text = " ".join(staff_mentions) if staff_mentions else ""
+        welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un membre du staff vous répondra."
+        if staff_ping_text:
+            welcome_text = f"{staff_ping_text}\n\n{welcome_text}"
+
+        await ticket_channel.send(welcome_text, view=close_view)
 
 class TicketCloseView(View):
     def __init__(self):
@@ -577,16 +592,22 @@ async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = 
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
-# CONFIGURATION LOGS
+# CONFIGURATION LOGS (Corrigé pour perms admin/mod)
 # ===========================================================
 @bot.command(name="autoconfiglog", help="Crée automatiquement tous les salons de logs.")
 @commands.has_permissions(administrator=True)
 async def autoconfiglog(ctx):
     guild = ctx.guild
+    
+    # Configuration des permissions pour que seuls le bot et le staff (admin/mod) voient les logs
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, manage_channels=True)
     }
+
+    for role in guild.roles:
+        if role.permissions.administrator or role.permissions.manage_messages or role.permissions.moderate_members:
+            overwrites[role] = discord.PermissionOverwrite(read_messages=True)
 
     category = await guild.create_category("📜 • Logs", overwrites=overwrites)
     server_configs["ticket_category_id"] = category.id
@@ -599,7 +620,7 @@ async def autoconfiglog(ctx):
     c6 = await guild.create_text_channel("🎫・logs-tickets", category=category, overwrites=overwrites)
 
     server_configs["logs"] = {"mod": c1.id, "message": c2.id, "voice": c3.id, "role": c4.id, "raid": c5.id, "ticket": c6.id}
-    await ctx.send("✅ Salons de logs et catégorie créés avec succès !")
+    await ctx.send("✅ Salons de logs et catégorie créés avec succès (visibles uniquement par le staff) !")
 
 @bot.command(name="modlog")
 @commands.has_permissions(administrator=True)
