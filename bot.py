@@ -3,7 +3,7 @@ import random
 import asyncio
 from datetime import datetime, timedelta
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import Button, View
 from aiohttp import web
 from PIL import Image, ImageDraw, ImageFont
@@ -32,7 +32,7 @@ spam_tracker = {}     # {user_id: [timestamp1, timestamp2, ...]}
 
 server_configs = {
     "welcome_channel": None,
-    "level_channel": None,  # Salon pour les niveaux
+    "level_channel": None,  # Salon pour les niveaux (gardé en config si besoin)
     "autorole_id": None,
     "ticket_category_id": None,
     "spam_limit": 5,        # Nombre de messages par défaut
@@ -230,10 +230,35 @@ bot = commands.Bot(
     command_prefix=PREFIX, intents=intents, help_command=MyHelp()
 )
 
+@tasks.loop(minutes=1.0)
+async def vocal_xp_loop():
+    for guild in bot.guilds:
+        for vc in guild.voice_channels:
+            # Ne compte pas les membres seuls ou bots dans le salon
+            valid_members = [m for m in vc.members if not m.bot and not m.voice.self_deaf and not m.voice.deaf]
+            if len(valid_members) > 1:
+                for member in valid_members:
+                    if member.id not in user_xp:
+                        user_xp[member.id] = {"xp": 0, "level": 1, "vocal_xp": 0}
+                    
+                    # Ajout d'XP vocal par minute
+                    gain = random.randint(5, 12)
+                    user_xp[member.id]["vocal_xp"] += gain
+                    user_xp[member.id]["xp"] += gain
+
+                    # Calcul de montée de niveau silencieuse
+                    current_xp = user_xp[member.id]["xp"]
+                    current_level = user_xp[member.id]["level"]
+                    next_level_xp = current_level * 300
+                    if current_xp >= next_level_xp:
+                        user_xp[member.id]["level"] += 1
+
 @bot.event
 async def on_ready():
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
+    if not vocal_xp_loop.is_running():
+        vocal_xp_loop.start()
 
 # ---------------------------------------------------------
 # ÉVÉNEMENTS & LOGS
@@ -288,7 +313,7 @@ async def on_message(message):
 
             await message.channel.send(f"🔇 {message.author.mention} a reçu un avertissement et a été **mute automatiquement pendant 5 minutes** pour spam.", delete_after=10)
 
-    # Système de Niveaux / XP
+    # Système de Niveaux / XP (Sans message public de niveau)
     if user_id not in user_xp:
         user_xp[user_id] = {"xp": 0, "level": 1, "vocal_xp": 0}
 
@@ -299,64 +324,6 @@ async def on_message(message):
 
     if current_xp >= next_level_xp:
         user_xp[user_id]["level"] += 1
-        new_lvl = user_xp[user_id]["level"]
-        
-        target_chan = None
-        if server_configs["level_channel"]:
-            target_chan = message.guild.get_channel(server_configs["level_channel"])
-        
-        if not target_chan:
-            target_chan = message.channel
-
-        try:
-            card = Image.new("RGBA", (900, 300), (32, 34, 37, 255))
-            draw = ImageDraw.Draw(card)
-            draw.rounded_rectangle([20, 20, 880, 280], radius=20, fill=(47, 49, 54, 255))
-            draw.rounded_rectangle([40, 160, 860, 250], radius=10, fill=(54, 57, 63, 255))
-
-            bar_width = 800
-            current_progress = int((current_xp / next_level_xp) * bar_width) if next_level_xp > 0 else bar_width
-            current_progress = min(max(current_progress, 20), bar_width)
-            draw.rounded_rectangle([50, 175, 50 + current_progress, 195], radius=8, fill=(235, 120, 30, 255))
-
-            try:
-                avatar_asset = message.author.display_avatar.replace(size=128, format="png")
-                avatar_bytes = await avatar_asset.read()
-                avatar_img = Image.open(io.BytesIO(avatar_bytes)).resize((100, 100))
-                mask = Image.new("L", (100, 100), 0)
-                mask_draw = ImageDraw.Draw(mask)
-                mask_draw.ellipse((0, 0, 100, 100), fill=255)
-                card.paste(avatar_img, (50, 40), mask)
-            except Exception:
-                pass
-
-            try:
-                font_large = ImageFont.truetype("arial.ttf", 36)
-                font_small = ImageFont.truetype("arial.ttf", 20)
-            except IOError:
-                font_large = ImageFont.load_default()
-                font_small = ImageFont.load_default()
-
-            draw.text((170, 45), f"{message.author.display_name}", fill=(255, 255, 255), font=font_large)
-            draw.text((170, 95), f"Rang : #1  •  Niveau : {new_lvl}", fill=(180, 180, 180), font=font_small)
-            draw.text((70, 215), f"XP Total : {current_xp + user_xp[user_id]['vocal_xp']}", fill=(220, 220, 220), font=font_small)
-            draw.text((360, 215), f"XP Vocal : {user_xp[user_id]['vocal_xp']}", fill=(220, 220, 220), font=font_small)
-            draw.text((650, 215), f"Objectif : {next_level_xp} XP", fill=(220, 220, 220), font=font_small)
-
-            buffer = io.BytesIO()
-            card.save(buffer, format="PNG")
-            buffer.seek(0)
-            file = discord.File(buffer, filename="rank_card.png")
-
-            sent_msg = await target_chan.send(f"🎉 Bravo {message.author.mention}, tu passes au niveau **{new_lvl}** !", file=file)
-            
-            await asyncio.sleep(5)
-            try:
-                await sent_msg.delete()
-            except:
-                pass
-        except Exception as e:
-            print(f"Erreur lors de l'envoi de la carte de niveau : {e}")
 
     await bot.process_commands(message)
 
@@ -493,7 +460,7 @@ async def topniveau(ctx):
 @commands.has_permissions(administrator=True)
 async def niveauconfig(ctx):
     chan_id = server_configs["level_channel"]
-    chan_mention = f"<#{chan_id}>" if chan_id else "❌ Non configuré (envoi dans le salon actif)"
+    chan_mention = f"<#{chan_id}>" if chan_id else "❌ Non configuré"
     
     embed = discord.Embed(
         title="📊 Configuration du Système de Niveaux",
@@ -501,7 +468,7 @@ async def niveauconfig(ctx):
         timestamp=datetime.utcnow()
     )
     embed.add_field(name="💬 Salon des annonces de niveaux", value=chan_mention, inline=False)
-    embed.add_field(name="⚙️ Comment modifier ?", value="Utilisez la commande `?salonlevel #salon` pour définir ou modifier le salon des annonces.", inline=False)
+    embed.add_field(name="⚙️ Information", value="Les messages de niveau ont été désactivés.", inline=False)
     
     await ctx.send(embed=embed)
 
@@ -512,7 +479,7 @@ async def salonlevel(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Salon des niveaux configuré sur : {channel.mention}")
 
 # ===========================================================
-# SYSTÈME DE TICKETS (Corrigé pour ping les rôles ayant la perm TO / Admin)
+# SYSTÈME DE TICKETS
 # ===========================================================
 class TicketView(View):
     def __init__(self, panel_title: str):
@@ -531,7 +498,6 @@ class TicketView(View):
         
         staff_mentions = []
         for role in guild.roles:
-            # Vérifie si le rôle a la permission de Timeout (moderate_members) ou Administrator
             if role.permissions.moderate_members or role.permissions.administrator:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                 if not role.is_default() and role.mention not in staff_mentions:
@@ -608,13 +574,41 @@ async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = 
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
-# CONFIGURATION LOGS
+# CONFIGURATION LOGS (Avec nettoyage des anciens salons)
 # ===========================================================
-@bot.command(name="autoconfiglog", help="Crée automatiquement tous les salons de logs.")
+@bot.command(name="autoconfiglog", help="Crée automatiquement tous les salons de logs et supprime les anciens.")
 @commands.has_permissions(administrator=True)
 async def autoconfiglog(ctx):
     guild = ctx.guild
     
+    # Suppression de l'ancienne catégorie de logs si elle existe déjà
+    old_cat_id = server_configs.get("ticket_category_id")
+    if old_cat_id:
+        old_cat = guild.get_channel(old_cat_id)
+        if old_cat:
+            for channel in old_cat.channels:
+                try:
+                    await channel.delete()
+                except:
+                    pass
+            try:
+                await old_cat.delete()
+            except:
+                pass
+
+    # Recherche au cas où une catégorie "📜 • Logs" existerait déjà par son nom
+    for cat in guild.categories:
+        if cat.name == "📜 • Logs":
+            for channel in cat.channels:
+                try:
+                    await channel.delete()
+                except:
+                    pass
+            try:
+                await cat.delete()
+            except:
+                pass
+
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, manage_channels=True)
@@ -635,7 +629,7 @@ async def autoconfiglog(ctx):
     c6 = await guild.create_text_channel("🎫・logs-tickets", category=category, overwrites=overwrites)
 
     server_configs["logs"] = {"mod": c1.id, "message": c2.id, "voice": c3.id, "role": c4.id, "raid": c5.id, "ticket": c6.id}
-    await ctx.send("✅ Salons de logs et catégorie créés avec succès (visibles uniquement par les administrateurs) !")
+    await ctx.send("✅ Anciens salons de logs nettoyés et nouveaux salons créés avec succès !")
 
 @bot.command(name="modlog")
 @commands.has_permissions(administrator=True)
@@ -694,7 +688,7 @@ async def ghostping(ctx):
     await ctx.send("✅ Module Anti-Ghost Ping actif.")
 
 # ===========================================================
-# COMMANDE GIVEAWAY DYNAMIQUE (MISES À JOUR)
+# COMMANDE GIVEAWAY DYNAMIQUE
 # ===========================================================
 @bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <temps> <prix> , <nombre de gagnants>")
 @commands.has_permissions(administrator=True)
