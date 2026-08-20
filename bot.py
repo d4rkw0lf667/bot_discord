@@ -48,15 +48,15 @@ server_configs = {
 }
 
 # ---------------------------------------------------------
-# VÉRIFICATION PERSONNALISÉE : ADMIN OU MODÉRATEUR
+# VÉRIFICATION PERSONNALISÉE : ADMIN OU MODÉRATEUR (Basé sur Timeout)
 # ---------------------------------------------------------
 def is_mod_or_admin():
     async def predicate(ctx):
         if ctx.author.guild_permissions.administrator:
             return True
-        if any(role.name.lower() in ["modérateur", "moderateur"] for role in ctx.author.roles):
+        if ctx.author.guild_permissions.moderate_members:
             return True
-        raise commands.MissingPermissions(["administrator"])
+        raise commands.MissingPermissions(["moderate_members"])
     return commands.check(predicate)
 
 # ---------------------------------------------------------
@@ -167,7 +167,7 @@ class MyHelp(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         ctx = self.context
         is_admin = ctx.author.guild_permissions.administrator
-        is_mod = any(role.name.lower() in ["modérateur", "moderateur"] for role in ctx.author.roles) or is_admin
+        is_mod = ctx.author.guild_permissions.moderate_members or is_admin
 
         embed = discord.Embed(
             title="📜 Centre d'Aide & Commandes", 
@@ -512,7 +512,7 @@ async def salonlevel(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Salon des niveaux configuré sur : {channel.mention}")
 
 # ===========================================================
-# SYSTÈME DE TICKETS
+# SYSTÈME DE TICKETS (Corrigé pour ping les rôles ayant la perm TO / Admin)
 # ===========================================================
 class TicketView(View):
     def __init__(self, panel_title: str):
@@ -531,8 +531,8 @@ class TicketView(View):
         
         staff_mentions = []
         for role in guild.roles:
-            # Vérifie si le rôle est Admin ou contient "modérateur"/"moderateur" dans son nom
-            if role.permissions.administrator or role.name.lower() in ["modérateur", "moderateur"]:
+            # Vérifie si le rôle a la permission de Timeout (moderate_members) ou Administrator
+            if role.permissions.moderate_members or role.permissions.administrator:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                 if not role.is_default() and role.mention not in staff_mentions:
                     staff_mentions.append(role.mention)
