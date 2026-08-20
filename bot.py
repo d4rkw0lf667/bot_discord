@@ -54,7 +54,7 @@ def is_mod_or_admin():
     async def predicate(ctx):
         if ctx.author.guild_permissions.administrator:
             return True
-        if any(role.name.lower() == "modérateur" or role.name.lower() == "moderateur" for role in ctx.author.roles):
+        if any(role.name.lower() in ["modérateur", "moderateur"] for role in ctx.author.roles):
             return True
         raise commands.MissingPermissions(["administrator"])
     return commands.check(predicate)
@@ -341,7 +341,7 @@ async def on_message(message):
             draw.text((170, 95), f"Rang : #1  •  Niveau : {new_lvl}", fill=(180, 180, 180), font=font_small)
             draw.text((70, 215), f"XP Total : {current_xp + user_xp[user_id]['vocal_xp']}", fill=(220, 220, 220), font=font_small)
             draw.text((360, 215), f"XP Vocal : {user_xp[user_id]['vocal_xp']}", fill=(220, 220, 220), font=font_small)
-            draw.text((650, 215), f"Objectif : {next_lvl_xp} XP", fill=(220, 220, 220), font=font_small)
+            draw.text((650, 215), f"Objectif : {next_level_xp} XP", fill=(220, 220, 220), font=font_small)
 
             buffer = io.BytesIO()
             card.save(buffer, format="PNG")
@@ -531,6 +531,7 @@ class TicketView(View):
         
         staff_mentions = []
         for role in guild.roles:
+            # Vérifie si le rôle est Admin ou contient "modérateur"/"moderateur" dans son nom
             if role.permissions.administrator or role.name.lower() in ["modérateur", "moderateur"]:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                 if not role.is_default() and role.mention not in staff_mentions:
