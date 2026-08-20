@@ -283,8 +283,11 @@ async def on_message(message):
         user_xp[user_id]["level"] += 1
         new_lvl = user_xp[user_id]["level"]
         
-        # Récupération du salon dédié ou repli sur le salon courant
-        target_chan = message.guild.get_channel(server_configs["level_channel"]) if server_configs["level_channel"] else message.channel
+        # CORRECTION ICI : Récupération correcte du salon configuré pour les niveaux
+        target_chan = None
+        if server_configs["level_channel"]:
+            target_chan = message.guild.get_channel(server_configs["level_channel"])
+        
         if not target_chan:
             target_chan = message.channel
 
@@ -660,7 +663,10 @@ async def ghostping(ctx):
 @bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <temps> <lot> , <gagnants>")
 @commands.has_permissions(manage_guild=True)
 async def giveaway(ctx, time_arg: str, *, content: str):
-    await ctx.message.delete()
+    try:
+        await ctx.message.delete()
+    except:
+        pass
     
     duration = convert_time(time_arg)
     if not duration:
