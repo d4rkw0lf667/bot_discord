@@ -48,6 +48,18 @@ server_configs = {
 }
 
 # ---------------------------------------------------------
+# VÉRIFICATION PERSONNALISÉE : ADMIN OU MODÉRATEUR
+# ---------------------------------------------------------
+def is_mod_or_admin():
+    async def predicate(ctx):
+        if ctx.author.guild_permissions.administrator:
+            return True
+        if any(role.name.lower() == "modérateur" or role.name.lower() == "moderateur" for role in ctx.author.roles):
+            return True
+        raise commands.MissingPermissions(["administrator"])
+    return commands.check(predicate)
+
+# ---------------------------------------------------------
 # FONCTION UTILITAIRE : CONVERSION & FORMATAGE DU TEMPS
 # ---------------------------------------------------------
 def convert_time(time_str: str) -> int:
@@ -80,7 +92,6 @@ def convert_time(time_str: str) -> int:
     return total_seconds if total_seconds > 0 else None
 
 def format_duration(time_str: str) -> str:
-    """Convertit une chaîne courte (ex: 1h, 30m) en texte lisible (1 heure, 30 minutes)"""
     time_str = time_str.lower()
     number = ""
     result = []
@@ -105,7 +116,7 @@ def format_duration(time_str: str) -> str:
     return " ".join(result) if result else time_str
 
 # ---------------------------------------------------------
-# FONCTION LOG MODÉRATION PERSONNALISÉE (EMBED PROPRE)
+# FONCTION LOG MODÉRATION PERSONNALISÉE
 # ---------------------------------------------------------
 async def send_mod_log(guild, title, color, member, moderator, reason, duration=None, sanction_type=None):
     log_id = server_configs["logs"]["mod"]
@@ -121,7 +132,7 @@ async def send_mod_log(guild, title, color, member, moderator, reason, duration=
     embed = discord.Embed(title=title, color=color, timestamp=now)
     embed.add_field(name="🎯 Sanction", value=sanction_type or title, inline=True)
     embed.add_field(name="👤 Utilisateur sanctionné", value=f"{member} (`{member.id}`)", inline=True)
-    embed.add_field(name="🛡️ Administrateur", value=f"{moderator.mention} (`{moderator.id}`)", inline=False)
+    embed.add_field(name="🛡️ Modérateur / Admin", value=f"{moderator.mention} (`{moderator.id}`)", inline=False)
     
     if duration:
         embed.add_field(name="⏱️ Durée", value=format_duration(duration), inline=True)
@@ -140,7 +151,7 @@ async def send_sanction_dm(member, title, description, color, duration, moderato
     embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
     if duration:
         embed.add_field(name="⏱️ Durée", value=format_duration(duration), inline=True)
-    embed.add_field(name="🛡️ Administrateur", value=f"{moderator} (`{moderator.id}`)", inline=True)
+    embed.add_field(name="🛡️ Modérateur / Admin", value=f"{moderator} (`{moderator.id}`)", inline=True)
     embed.add_field(name="📅 Date & Heure", value=f"Le {date_str} à {heure_str}", inline=False)
     embed.add_field(name="📌 Raison", value=reason, inline=False)
     
@@ -156,6 +167,7 @@ class MyHelp(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         ctx = self.context
         is_admin = ctx.author.guild_permissions.administrator
+        is_mod = any(role.name.lower() in ["modérateur", "moderateur"] for role in ctx.author.roles) or is_admin
 
         embed = discord.Embed(
             title="📜 Centre d'Aide & Commandes", 
@@ -166,27 +178,33 @@ class MyHelp(commands.HelpCommand):
         general_cmds = []
         fun_cmds = []
         mod_cmds = []
+        admin_cmds = []
 
         for cog, commands_list in mapping.items():
             for c in commands_list:
                 if c.hidden:
                     continue
-                if c.name in ["ban", "unban", "kick", "mute", "unmute", "warn", "warns", "clear", "setup_logs", "giveaway", 
-                              "autoconfiglog", "modlog", "messagelog", "voicelog", "rolelog", "raidlog", "ticketlog", 
-                              "welcome", "autorole", "niveauconfig", "salonlevel", "ticketconfig", "say", "annonce", "role"]:
+                if c.name in ["kick", "mute", "unmute", "warn", "warns", "clear"]:
                     mod_cmds.append(f"`?{c.name}`")
+                elif c.name in ["ban", "unban", "setup_logs", "giveaway", "autoconfiglog", "modlog", "messagelog", 
+                              "voicelog", "rolelog", "raidlog", "ticketlog", "welcome", "autorole", "niveauconfig", 
+                              "salonlevel", "ticketconfig", "say", "annonce", "role", "ghostping"]:
+                    admin_cmds.append(f"`?{c.name}`")
                 elif c.name in ["8ball", "dice", "coinflip", "joke", "avatar", "hug", "slap", "rate"]:
                     fun_cmds.append(f"`?{c.name}`")
                 else:
                     general_cmds.append(f"`?{c.name}`")
 
-        embed.add_field(name="🎮 Commandes Membres & Niveaux", value="\n".join(general_cmds + fun_cmds), inline=False)
+        embed.add_field(name="🎮 Commandes Membres & Niveaux", value="\n".join(general_cmds + fun_cmds) if (general_cmds + fun_cmds) else "Aucune", inline=False)
         
+        if is_mod:
+            embed.add_field(name="🛡️ Commandes de Modération", value="\n".join(mod_cmds), inline=False)
+            
         if is_admin:
-            embed.add_field(name="🛡️ Commandes d'Administration & Configuration", value="\n".join(mod_cmds), inline=False)
+            embed.add_field(name="⚙️ Commandes d'Administration", value="\n".join(admin_cmds), inline=False)
             embed.set_footer(text="💡 Utilisez ?help <commande> pour voir les détails d'une commande.")
         else:
-            embed.set_footer(text="🔒 Les commandes d'administration sont masquées.")
+            embed.set_footer(text="🔒 Les commandes avancées sont masquées selon vos permissions.")
 
         await ctx.send(embed=embed)
 
@@ -397,7 +415,7 @@ async def on_member_join(member):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
-        await ctx.send("❌ Permissions insuffisantes (Administrateur requis).")
+        await ctx.send("❌ Permissions insuffisantes (Rôle Modérateur ou Administrateur requis).")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"⚠️ Argument manquant. Utilisation : `{ctx.command.usage or ctx.command.name}`")
     elif isinstance(error, commands.CommandNotFound):
@@ -513,7 +531,7 @@ class TicketView(View):
         
         staff_mentions = []
         for role in guild.roles:
-            if role.permissions.administrator:
+            if role.permissions.administrator or role.name.lower() in ["modérateur", "moderateur"]:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                 if not role.is_default() and role.mention not in staff_mentions:
                     staff_mentions.append(role.mention)
@@ -539,7 +557,7 @@ class TicketView(View):
         close_view = TicketCloseView()
         
         staff_ping_text = " ".join(staff_mentions) if staff_mentions else ""
-        welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un administrateur vous répondra."
+        welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un membre du staff vous répondra."
         if staff_ping_text:
             welcome_text = f"{staff_ping_text}\n\n{welcome_text}"
 
@@ -675,9 +693,9 @@ async def ghostping(ctx):
     await ctx.send("✅ Module Anti-Ghost Ping actif.")
 
 # ===========================================================
-# COMMANDE GIVEAWAY DYNAMIQUE
+# COMMANDE GIVEAWAY DYNAMIQUE (MISES À JOUR)
 # ===========================================================
-@bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <temps> <lot> , <gagnants>")
+@bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <temps> <prix> , <nombre de gagnants>")
 @commands.has_permissions(administrator=True)
 async def giveaway(ctx, time_arg: str, *, content: str):
     try:
@@ -690,7 +708,7 @@ async def giveaway(ctx, time_arg: str, *, content: str):
         return await ctx.send("❌ Format de temps invalide ! Utilisez par exemple : `30s`, `15m`, `2h` ou `1j`.", delete_after=5)
     
     if "," in content:
-        parts = content.split(",", 1)
+        parts = content.rsplit(",", 1)
         prize = parts[0].strip()
         try:
             winners_count = int(parts[1].strip())
@@ -824,7 +842,7 @@ async def role_command(ctx, *, args: str):
 # COMMANDES DE WARNS
 # ===========================================================
 @bot.command(name="warn", help="Met un avertissement à un utilisateur. Utilisation : ?warn @Utilisateur <raison>")
-@commands.has_permissions(administrator=True)
+@is_mod_or_admin()
 async def warn(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
     user_id = member.id
     if user_id not in user_warns:
@@ -852,14 +870,14 @@ async def warn(ctx, member: discord.Member, *, reason: str = "Aucune raison four
 
     public_embed = discord.Embed(
         title="⚠️ Sanction Appliquée",
-        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Avertissement (Warn)\n**Total :** {warn_count}\n**Administrateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Avertissement (Warn)\n**Total :** {warn_count}\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
         color=discord.Color.orange(),
         timestamp=datetime.utcnow()
     )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="warns", help="Affiche les avertissements d'un utilisateur. Utilisation : ?warns @Utilisateur")
-@commands.has_permissions(administrator=True)
+@is_mod_or_admin()
 async def warns(ctx, member: discord.Member):
     user_id = member.id
     history = user_warns.get(user_id, [])
@@ -879,7 +897,7 @@ async def warns(ctx, member: discord.Member):
         mod_name = mod.mention if mod else f"ID: {w['moderator']}"
         embed.add_field(
             name=f"Warn #{i} — {w['date']}",
-            value=f"📌 **Raison :** {w['reason']}\n🛡️ **Administrateur :** {mod_name}",
+            value=f"📌 **Raison :** {w['reason']}\n🛡️ **Modérateur :** {mod_name}",
             inline=False
         )
 
@@ -924,7 +942,7 @@ async def unban(ctx, *, user_input: str):
     await ctx.send("❌ Utilisateur introuvable.")
 
 @bot.command(name="kick")
-@commands.has_permissions(administrator=True)
+@is_mod_or_admin()
 async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
     await send_sanction_dm(
         member,
@@ -941,14 +959,14 @@ async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison four
     
     public_embed = discord.Embed(
         title="👢 Sanction Appliquée",
-        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Expulsion\n**Administrateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Expulsion\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
         color=discord.Color.orange(),
         timestamp=datetime.utcnow()
     )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="mute")
-@commands.has_permissions(administrator=True)
+@is_mod_or_admin()
 async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Aucune raison fournie"):
     seconds = convert_time(time_arg)
     if not seconds:
@@ -973,14 +991,14 @@ async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Auc
         
     public_embed = discord.Embed(
         title="🔇 Sanction Appliquée",
-        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Mute (Timeout)\n**Durée :** {readable_duration}\n**Administrateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Mute (Timeout)\n**Durée :** {readable_duration}\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
         color=discord.Color.gold(),
         timestamp=datetime.utcnow()
     )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="unmute")
-@commands.has_permissions(administrator=True)
+@is_mod_or_admin()
 async def unmute(ctx, member: discord.Member):
     await member.timeout(None)
     
@@ -998,7 +1016,7 @@ async def unmute(ctx, member: discord.Member):
     await ctx.send(f"✅ {member.mention} a été unmute.")
 
 @bot.command(name="clear")
-@commands.has_permissions(administrator=True)
+@is_mod_or_admin()
 async def clear(ctx, nombre: int):
     deleted = await ctx.channel.purge(limit=nombre + 1)
     msg = await ctx.send(f"🧹 {len(deleted) - 1} message(s) supprimé(s).")
