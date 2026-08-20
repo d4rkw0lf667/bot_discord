@@ -121,7 +121,7 @@ async def send_mod_log(guild, title, color, member, moderator, reason, duration=
     embed = discord.Embed(title=title, color=color, timestamp=now)
     embed.add_field(name="🎯 Sanction", value=sanction_type or title, inline=True)
     embed.add_field(name="👤 Utilisateur sanctionné", value=f"{member} (`{member.id}`)", inline=True)
-    embed.add_field(name="🛡️ Modérateur", value=f"{moderator.mention} (`{moderator.id}`)", inline=False)
+    embed.add_field(name="🛡️ Administrateur", value=f"{moderator.mention} (`{moderator.id}`)", inline=False)
     
     if duration:
         embed.add_field(name="⏱️ Durée", value=format_duration(duration), inline=True)
@@ -140,7 +140,7 @@ async def send_sanction_dm(member, title, description, color, duration, moderato
     embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
     if duration:
         embed.add_field(name="⏱️ Durée", value=format_duration(duration), inline=True)
-    embed.add_field(name="🛡️ Modérateur", value=f"{moderator} (`{moderator.id}`)", inline=True)
+    embed.add_field(name="🛡️ Administrateur", value=f"{moderator} (`{moderator.id}`)", inline=True)
     embed.add_field(name="📅 Date & Heure", value=f"Le {date_str} à {heure_str}", inline=False)
     embed.add_field(name="📌 Raison", value=reason, inline=False)
     
@@ -155,7 +155,7 @@ async def send_sanction_dm(member, title, description, color, duration, moderato
 class MyHelp(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         ctx = self.context
-        is_mod = ctx.author.guild_permissions.manage_messages
+        is_admin = ctx.author.guild_permissions.administrator
 
         embed = discord.Embed(
             title="📜 Centre d'Aide & Commandes", 
@@ -182,11 +182,11 @@ class MyHelp(commands.HelpCommand):
 
         embed.add_field(name="🎮 Commandes Membres & Niveaux", value="\n".join(general_cmds + fun_cmds), inline=False)
         
-        if is_mod:
-            embed.add_field(name="🛡️ Commandes de Modération & Configuration", value="\n".join(mod_cmds), inline=False)
+        if is_admin:
+            embed.add_field(name="🛡️ Commandes d'Administration & Configuration", value="\n".join(mod_cmds), inline=False)
             embed.set_footer(text="💡 Utilisez ?help <commande> pour voir les détails d'une commande.")
         else:
-            embed.set_footer(text="🔒 Les commandes de modération sont masquées.")
+            embed.set_footer(text="🔒 Les commandes d'administration sont masquées.")
 
         await ctx.send(embed=embed)
 
@@ -397,7 +397,7 @@ async def on_member_join(member):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
-        await ctx.send("❌ Permissions insuffisantes.")
+        await ctx.send("❌ Permissions insuffisantes (Administrateur requis).")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send(f"⚠️ Argument manquant. Utilisation : `{ctx.command.usage or ctx.command.name}`")
     elif isinstance(error, commands.CommandNotFound):
@@ -494,7 +494,7 @@ async def salonlevel(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Salon des niveaux configuré sur : {channel.mention}")
 
 # ===========================================================
-# SYSTÈME DE TICKETS (Corrigé pour perms admin/mod & mentions)
+# SYSTÈME DE TICKETS
 # ===========================================================
 class TicketView(View):
     def __init__(self, panel_title: str):
@@ -505,17 +505,15 @@ class TicketView(View):
     async def create_ticket(self, interaction: discord.Interaction, button: Button):
         guild = interaction.guild
         
-        # Permissions de base : Bloqué pour tout le monde, accessible pour l'auteur et le bot
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(read_messages=True)
         }
         
-        # Ajout automatique des permissions de lecture/écriture pour tous les rôles mod/admin du serveur
         staff_mentions = []
         for role in guild.roles:
-            if role.permissions.administrator or role.permissions.manage_messages or role.permissions.moderate_members:
+            if role.permissions.administrator:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                 if not role.is_default() and role.mention not in staff_mentions:
                     staff_mentions.append(role.mention)
@@ -540,9 +538,8 @@ class TicketView(View):
 
         close_view = TicketCloseView()
         
-        # Construction du message d'accueil avec mention des rôles modérateurs/admins s'ils existent
         staff_ping_text = " ".join(staff_mentions) if staff_mentions else ""
-        welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un membre du staff vous répondra."
+        welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un administrateur vous répondra."
         if staff_ping_text:
             welcome_text = f"{staff_ping_text}\n\n{welcome_text}"
 
@@ -592,21 +589,20 @@ async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = 
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
-# CONFIGURATION LOGS (Corrigé pour perms admin/mod)
+# CONFIGURATION LOGS
 # ===========================================================
 @bot.command(name="autoconfiglog", help="Crée automatiquement tous les salons de logs.")
 @commands.has_permissions(administrator=True)
 async def autoconfiglog(ctx):
     guild = ctx.guild
     
-    # Configuration des permissions pour que seuls le bot et le staff (admin/mod) voient les logs
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, manage_channels=True)
     }
 
     for role in guild.roles:
-        if role.permissions.administrator or role.permissions.manage_messages or role.permissions.moderate_members:
+        if role.permissions.administrator:
             overwrites[role] = discord.PermissionOverwrite(read_messages=True)
 
     category = await guild.create_category("📜 • Logs", overwrites=overwrites)
@@ -620,7 +616,7 @@ async def autoconfiglog(ctx):
     c6 = await guild.create_text_channel("🎫・logs-tickets", category=category, overwrites=overwrites)
 
     server_configs["logs"] = {"mod": c1.id, "message": c2.id, "voice": c3.id, "role": c4.id, "raid": c5.id, "ticket": c6.id}
-    await ctx.send("✅ Salons de logs et catégorie créés avec succès (visibles uniquement par le staff) !")
+    await ctx.send("✅ Salons de logs et catégorie créés avec succès (visibles uniquement par les administrateurs) !")
 
 @bot.command(name="modlog")
 @commands.has_permissions(administrator=True)
@@ -682,7 +678,7 @@ async def ghostping(ctx):
 # COMMANDE GIVEAWAY DYNAMIQUE
 # ===========================================================
 @bot.command(name="giveaway", help="Lance un giveaway dynamique. Utilisation : ?giveaway <temps> <lot> , <gagnants>")
-@commands.has_permissions(manage_guild=True)
+@commands.has_permissions(administrator=True)
 async def giveaway(ctx, time_arg: str, *, content: str):
     try:
         await ctx.message.delete()
@@ -828,7 +824,7 @@ async def role_command(ctx, *, args: str):
 # COMMANDES DE WARNS
 # ===========================================================
 @bot.command(name="warn", help="Met un avertissement à un utilisateur. Utilisation : ?warn @Utilisateur <raison>")
-@commands.has_permissions(moderate_members=True)
+@commands.has_permissions(administrator=True)
 async def warn(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
     user_id = member.id
     if user_id not in user_warns:
@@ -856,14 +852,14 @@ async def warn(ctx, member: discord.Member, *, reason: str = "Aucune raison four
 
     public_embed = discord.Embed(
         title="⚠️ Sanction Appliquée",
-        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Avertissement (Warn)\n**Total :** {warn_count}\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Avertissement (Warn)\n**Total :** {warn_count}\n**Administrateur :** {ctx.author.mention}\n**Raison :** {reason}",
         color=discord.Color.orange(),
         timestamp=datetime.utcnow()
     )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="warns", help="Affiche les avertissements d'un utilisateur. Utilisation : ?warns @Utilisateur")
-@commands.has_permissions(moderate_members=True)
+@commands.has_permissions(administrator=True)
 async def warns(ctx, member: discord.Member):
     user_id = member.id
     history = user_warns.get(user_id, [])
@@ -883,7 +879,7 @@ async def warns(ctx, member: discord.Member):
         mod_name = mod.mention if mod else f"ID: {w['moderator']}"
         embed.add_field(
             name=f"Warn #{i} — {w['date']}",
-            value=f"📌 **Raison :** {w['reason']}\n🛡️ **Modérateur :** {mod_name}",
+            value=f"📌 **Raison :** {w['reason']}\n🛡️ **Administrateur :** {mod_name}",
             inline=False
         )
 
@@ -893,7 +889,7 @@ async def warns(ctx, member: discord.Member):
 # MODÉRATION & UTILS
 # ===========================================================
 @bot.command(name="ban")
-@commands.has_permissions(ban_members=True)
+@commands.has_permissions(administrator=True)
 async def ban(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
     await send_sanction_dm(
         member,
@@ -910,14 +906,14 @@ async def ban(ctx, member: discord.Member, *, reason: str = "Aucune raison fourn
     
     public_embed = discord.Embed(
         title="🔨 Sanction Appliquée",
-        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Bannissement\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Bannissement\n**Administrateur :** {ctx.author.mention}\n**Raison :** {reason}",
         color=discord.Color.red(),
         timestamp=datetime.utcnow()
     )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="unban")
-@commands.has_permissions(ban_members=True)
+@commands.has_permissions(administrator=True)
 async def unban(ctx, *, user_input: str):
     banned = [e async for e in ctx.guild.bans()]
     for entry in banned:
@@ -928,7 +924,7 @@ async def unban(ctx, *, user_input: str):
     await ctx.send("❌ Utilisateur introuvable.")
 
 @bot.command(name="kick")
-@commands.has_permissions(kick_members=True)
+@commands.has_permissions(administrator=True)
 async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison fournie"):
     await send_sanction_dm(
         member,
@@ -945,14 +941,14 @@ async def kick(ctx, member: discord.Member, *, reason: str = "Aucune raison four
     
     public_embed = discord.Embed(
         title="👢 Sanction Appliquée",
-        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Expulsion\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Expulsion\n**Administrateur :** {ctx.author.mention}\n**Raison :** {reason}",
         color=discord.Color.orange(),
         timestamp=datetime.utcnow()
     )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="mute")
-@commands.has_permissions(moderate_members=True)
+@commands.has_permissions(administrator=True)
 async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Aucune raison fournie"):
     seconds = convert_time(time_arg)
     if not seconds:
@@ -977,14 +973,14 @@ async def mute(ctx, member: discord.Member, time_arg: str, *, reason: str = "Auc
         
     public_embed = discord.Embed(
         title="🔇 Sanction Appliquée",
-        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Mute (Timeout)\n**Durée :** {readable_duration}\n**Modérateur :** {ctx.author.mention}\n**Raison :** {reason}",
+        description=f"**Utilisateur :** {member} (`{member.id}`)\n**Sanction :** Mute (Timeout)\n**Durée :** {readable_duration}\n**Administrateur :** {ctx.author.mention}\n**Raison :** {reason}",
         color=discord.Color.gold(),
         timestamp=datetime.utcnow()
     )
     await ctx.send(embed=public_embed)
 
 @bot.command(name="unmute")
-@commands.has_permissions(moderate_members=True)
+@commands.has_permissions(administrator=True)
 async def unmute(ctx, member: discord.Member):
     await member.timeout(None)
     
@@ -1002,7 +998,7 @@ async def unmute(ctx, member: discord.Member):
     await ctx.send(f"✅ {member.mention} a été unmute.")
 
 @bot.command(name="clear")
-@commands.has_permissions(manage_messages=True)
+@commands.has_permissions(administrator=True)
 async def clear(ctx, nombre: int):
     deleted = await ctx.channel.purge(limit=nombre + 1)
     msg = await ctx.send(f"🧹 {len(deleted) - 1} message(s) supprimé(s).")
@@ -1010,14 +1006,14 @@ async def clear(ctx, nombre: int):
     await msg.delete()
 
 @bot.command(name="say")
-@commands.has_permissions(manage_messages=True)
+@commands.has_permissions(administrator=True)
 async def say(ctx, *, message: str):
     try: await ctx.message.delete()
     except: pass
     await ctx.send(message)
 
 @bot.command(name="annonce")
-@commands.has_permissions(manage_messages=True)
+@commands.has_permissions(administrator=True)
 async def annonce(ctx, *, message: str):
     try: await ctx.message.delete()
     except: pass
