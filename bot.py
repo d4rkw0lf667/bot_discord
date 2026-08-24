@@ -9,6 +9,7 @@ from discord.ui import Button, View
 from aiohttp import web
 from PIL import Image, ImageDraw, ImageFont
 import io
+import asyncpg
 
 # ---------------------------------------------------------
 # CONFIGURATION SERVEUR WEB (Pour Render)
@@ -25,29 +26,63 @@ async def start_web_server():
     await site.start()
 
 # ---------------------------------------------------------
-# STOCKAGE & PERSISTENCE FICHIER (JSON) - CORRIGÉ
+# STOCKAGE & PERSISTENCE BASE DE DONNÉES (PostgreSQL)
 # ---------------------------------------------------------
-DATA_FILE = "levels.json"
+db_pool = None
 
-def load_user_xp():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): v for k, v in data.items() if str(k).isdigit()}
-        except Exception as e:
-            print(f"⚠️ Erreur lors du chargement des XP : {e}")
-    return {}
-
-def save_user_xp():
+async def init_db():
+    global db_pool
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        print("⚠️ ERREUR : La variable DATABASE_URL est introuvable dans l'environnement !")
+        return
     try:
-        data_to_save = {str(k): v for k, v in user_xp.items()}
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+        db_pool = await asyncpg.create_pool(database_url)
+        async with db_pool.acquire() as connection:
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS user_levels (
+                    user_id BIGINT PRIMARY KEY,
+                    xp INTEGER DEFAULT 0,
+                    level INTEGER DEFAULT 1,
+                    vocal_xp INTEGER DEFAULT 0
+                )
+            """)
+        print("✅ Connecté à la base de données PostgreSQL avec succès.")
     except Exception as e:
-        print(f"⚠️ Erreur lors de la sauvegarde des XP : {e}")
+        print(f"⚠️ Erreur lors de l'initialisation de la base de données : {e}")
 
-user_xp = load_user_xp()  
+async def get_db_user(user_id: int):
+    if not db_pool:
+        return {"xp": 0, "level": 1, "vocal_xp": 0}
+    async with db_pool.acquire() as connection:
+        row = await connection.fetchrow("SELECT xp, level, vocal_xp FROM user_levels WHERE user_id = $1", user_id)
+        if row:
+            return {"xp": row["xp"], "level": row["level"], "vocal_xp": row["vocal_xp"]}
+        else:
+            await connection.execute(
+                "INSERT INTO user_levels (user_id, xp, level, vocal_xp) VALUES ($1, 0, 1, 0) ON CONFLICT (user_id) DO NOTHING",
+                user_id
+            )
+            return {"xp": 0, "level": 1, "vocal_xp": 0}
+
+async def update_db_user(user_id: int, xp: int, level: int, vocal_xp: int):
+    if not db_pool:
+        return
+    async with db_pool.acquire() as connection:
+        await connection.execute("""
+            INSERT INTO user_levels (user_id, xp, level, vocal_xp) 
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET xp = $2, level = $3, vocal_xp = $4
+        """, user_id, xp, level, vocal_xp)
+
+async def get_all_db_users():
+    if not db_pool:
+        return {}
+    async with db_pool.acquire() as connection:
+        rows = await connection.fetch("SELECT user_id, xp, level, vocal_xp FROM user_levels")
+        return {row["user_id"]: {"xp": row["xp"], "level": row["level"], "vocal_xp": row["vocal_xp"]} for row in rows}
+
 user_warns = {}       
 spam_tracker = {}     
 voice_sessions = {}   
@@ -262,7 +297,7 @@ bot = commands.Bot(
 )
 
 # ---------------------------------------------------------
-# VUES PERSISTANTES (Garantit la survie après update/restart)
+# VUES PERSISTANTES
 # ---------------------------------------------------------
 class PersistentRoleView(View):
     def __init__(self):
@@ -365,27 +400,26 @@ async def vocal_xp_loop():
             valid_members = [m for m in vc.members if not m.bot and not m.voice.self_deaf and not m.voice.deaf]
             if len(valid_members) > 1:
                 for member in valid_members:
-                    if member.id not in user_xp:
-                        user_xp[member.id] = {"xp": 0, "level": 1, "vocal_xp": 0}
+                    user_data = await get_db_user(member.id)
                     
                     gain = random.randint(5, 12)
-                    user_xp[member.id]["vocal_xp"] += gain
-                    user_xp[member.id]["xp"] += gain
+                    user_data["vocal_xp"] += gain
+                    user_data["xp"] += gain
 
-                    lvl = user_xp[member.id]["level"]
+                    lvl = user_data["level"]
                     req_xp = get_xp_for_level(lvl)
-                    if user_xp[member.id]["xp"] >= req_xp:
-                        user_xp[member.id]["xp"] -= req_xp
-                        user_xp[member.id]["level"] += 1
-                
-                save_user_xp()
+                    if user_data["xp"] >= req_xp:
+                        user_data["xp"] -= req_xp
+                        user_data["level"] += 1
+                        
+                    await update_db_user(member.id, user_data["xp"], user_data["level"], user_data["vocal_xp"])
 
 @bot.event
 async def on_ready():
+    await init_db()
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
     
-    # Enregistrement des vues persistantes pour éviter les pertes après update/redémarrage
     bot.add_view(PersistentRoleView())
     bot.add_view(TicketView(panel_title="New Panel (1)"))
     bot.add_view(TicketCloseView())
@@ -462,19 +496,17 @@ async def on_message(message):
 
             await message.channel.send(f"🔇 {message.author.mention} a reçu un avertissement et a été **mute automatiquement pendant 5 minutes** pour spam.", delete_after=10)
 
-    # Système de Niveaux / XP
-    if user_id not in user_xp:
-        user_xp[user_id] = {"xp": 0, "level": 1, "vocal_xp": 0}
-
-    user_xp[user_id]["xp"] += random.randint(5, 10)
-    current_level = user_xp[user_id]["level"]
+    # Système de Niveaux / XP avec DB
+    user_data = await get_db_user(user_id)
+    user_data["xp"] += random.randint(5, 10)
+    current_level = user_data["level"]
     required_xp = get_xp_for_level(current_level)
 
-    if user_xp[user_id]["xp"] >= required_xp:
-        user_xp[user_id]["xp"] -= required_xp
-        user_xp[user_id]["level"] += 1
+    if user_data["xp"] >= required_xp:
+        user_data["xp"] -= required_xp
+        user_data["level"] += 1
 
-    save_user_xp()
+    await update_db_user(user_id, user_data["xp"], user_data["level"], user_data["vocal_xp"])
 
     await bot.process_commands(message)
 
@@ -619,42 +651,41 @@ async def xp_command(ctx, member: discord.Member, amount_str: str):
     except ValueError:
         return await ctx.send("❌ Valeur numérique invalide.")
 
-    if member.id not in user_xp:
-        user_xp[member.id] = {"xp": 0, "level": 1, "vocal_xp": 0}
-
-    user_xp[member.id]["xp"] += val
+    user_data = await get_db_user(member.id)
+    user_data["xp"] += val
     
-    while user_xp[member.id]["xp"] < 0 and user_xp[member.id]["level"] > 1:
-        user_xp[member.id]["level"] -= 1
-        req = get_xp_for_level(user_xp[member.id]["level"])
-        user_xp[member.id]["xp"] += req
+    while user_data["xp"] < 0 and user_data["level"] > 1:
+        user_data["level"] -= 1
+        req = get_xp_for_level(user_data["level"])
+        user_data["xp"] += req
 
-    if user_xp[member.id]["xp"] < 0:
-        user_xp[member.id]["xp"] = 0
+    if user_data["xp"] < 0:
+        user_data["xp"] = 0
 
-    req_xp = get_xp_for_level(user_xp[member.id]["level"])
-    while user_xp[member.id]["xp"] >= req_xp:
-        user_xp[member.id]["xp"] -= req_xp
-        user_xp[member.id]["level"] += 1
-        req_xp = get_xp_for_level(user_xp[member.id]["level"])
+    req_xp = get_xp_for_level(user_data["level"])
+    while user_data["xp"] >= req_xp:
+        user_data["xp"] -= req_xp
+        user_data["level"] += 1
+        req_xp = get_xp_for_level(user_data["level"])
 
-    save_user_xp()
+    await update_db_user(member.id, user_data["xp"], user_data["level"], user_data["vocal_xp"])
 
-    current_lvl = user_xp[member.id]["level"]
-    current_xp = user_xp[member.id]["xp"]
+    current_lvl = user_data["level"]
+    current_xp = user_data["xp"]
 
     await ctx.send(f"✅ Opération réussie ! {member.mention} est maintenant au niveau **{current_lvl}** avec **{current_xp} XP**.")
 
 @bot.command(name="level", aliases=["profil", "su", "rank"], help="Affiche ta carte de niveau visuelle.")
 async def level(ctx, member: discord.Member = None):
     member = member or ctx.author
-    data = user_xp.get(member.id, {"xp": 0, "level": 1, "vocal_xp": 0})
+    data = await get_db_user(member.id)
     current_xp = data["xp"]
     lvl = data["level"]
     vocal_xp = data["vocal_xp"]
     req_xp = get_xp_for_level(lvl)
 
-    sorted_users = sorted(user_xp.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
+    all_users = await get_all_db_users()
+    sorted_users = sorted(all_users.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
     user_rank = next((i for i, (uid, _) in enumerate(sorted_users, 1) if uid == member.id), len(sorted_users) if sorted_users else 1)
 
     total_accumulated_xp = get_total_xp_for_level(lvl) + current_xp
@@ -708,9 +739,10 @@ async def level(ctx, member: discord.Member = None):
 
 @bot.command(name="topniveau", help="Classement des niveaux.")
 async def topniveau(ctx):
-    if not user_xp:
+    all_users = await get_all_db_users()
+    if not all_users:
         return await ctx.send("⚠️ Aucun classement disponible.")
-    sorted_users = sorted(user_xp.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
+    sorted_users = sorted(all_users.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
     desc = "".join([f"**#{i}** — <@{uid}> | Niveau **{data['level']}** ({data['xp']} XP)\n" for i, (uid, data) in enumerate(sorted_users[:10], 1)])
     embed = discord.Embed(title="🏆 Classement des Niveaux", description=desc, color=discord.Color.gold())
     await ctx.send(embed=embed)
@@ -992,7 +1024,6 @@ class DynamicReactionRoleView(View):
     def __init__(self, role_mappings):
         super().__init__(timeout=None)
         for role, emoji in role_mappings:
-            # ID unique lié à l'ID du rôle garantissant la persistance après redémarrage
             button = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
             
             async def callback(interaction: discord.Interaction, r=role):
@@ -1042,7 +1073,6 @@ async def role_command(ctx, *, args: str):
     
     view = DynamicReactionRoleView(role_mappings)
     
-    # Enregistrement dynamique de chaque vue/bouton dans le bot pour qu'ils persistent activement
     for role, _ in role_mappings:
         async def make_persistent_callback(r=role):
             async def cb(interaction: discord.Interaction):
