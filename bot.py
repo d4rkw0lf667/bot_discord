@@ -1,6 +1,7 @@
 import os
 import random
 import asyncio
+import json
 from datetime import datetime, timedelta
 import discord
 from discord.ext import commands, tasks
@@ -24,9 +25,29 @@ async def start_web_server():
     await site.start()
 
 # ---------------------------------------------------------
-# STOCKAGE EN MÉMOIRE (Persistant entre les rechargements de code si conservé dans le scope global)
+# STOCKAGE & PERSISTENCE FICHIER (JSON)
 # ---------------------------------------------------------
-user_xp = {}          # {user_id: {"xp": 0, "level": 1, "vocal_xp": 0}}
+DATA_FILE = "levels.json"
+
+def load_user_xp():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                # Les clés dans le JSON sont des strings, on les convertit en int pour les user_id
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            print(f"⚠️ Erreur lors du chargement des XP : {e}")
+    return {}
+
+def save_user_xp():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_xp, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"⚠️ Erreur lors de la sauvegarde des XP : {e}")
+
+user_xp = load_user_xp()  # {user_id: {"xp": 0, "level": 1, "vocal_xp": 0}}
 user_warns = {}       # {user_id: [{"moderator": id, "reason": "...", "date": "..."}]}
 spam_tracker = {}     # {user_id: [timestamp1, timestamp2, ...]}
 voice_sessions = {}   # {user_id: timestamp_join}
@@ -261,6 +282,9 @@ async def vocal_xp_loop():
                     if user_xp[member.id]["xp"] >= req_xp:
                         user_xp[member.id]["xp"] -= req_xp
                         user_xp[member.id]["level"] += 1
+                
+                # Sauvegarde automatique après l'attribution d'XP vocal
+                save_user_xp()
 
 @bot.event
 async def on_ready():
@@ -368,6 +392,9 @@ async def on_message(message):
     if user_xp[user_id]["xp"] >= required_xp:
         user_xp[user_id]["xp"] -= required_xp
         user_xp[user_id]["level"] += 1
+
+    # Sauvegarde automatique à chaque message gagnant de l'XP
+    save_user_xp()
 
     await bot.process_commands(message)
 
@@ -539,6 +566,8 @@ async def xp_command(ctx, member: discord.Member, amount_str: str):
         user_xp[member.id]["xp"] -= req_xp
         user_xp[member.id]["level"] += 1
         req_xp = get_xp_for_level(user_xp[member.id]["level"])
+
+    save_user_xp()
 
     current_lvl = user_xp[member.id]["level"]
     current_xp = user_xp[member.id]["xp"]
