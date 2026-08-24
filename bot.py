@@ -29,14 +29,15 @@ async def start_web_server():
 user_xp = {}          # {user_id: {"xp": 0, "level": 1, "vocal_xp": 0}}
 user_warns = {}       # {user_id: [{"moderator": id, "reason": "...", "date": "..."}]}
 spam_tracker = {}     # {user_id: [timestamp1, timestamp2, ...]}
+voice_sessions = {}   # {user_id: timestamp_join}
 
 server_configs = {
     "welcome_channel": None,
-    "level_channel": None,  # Salon pour les niveaux (gardé en config si besoin)
+    "level_channel": None,
     "autorole_id": None,
     "ticket_category_id": None,
-    "spam_limit": 5,        # Nombre de messages par défaut
-    "spam_time": 5,         # Dans un intervalle de x secondes par défaut
+    "spam_limit": 5,        
+    "spam_time": 5,         
     "logs": {
         "mod": None,
         "message": None,
@@ -48,7 +49,18 @@ server_configs = {
 }
 
 # ---------------------------------------------------------
-# VÉRIFICATION PERSONNALISÉE : ADMIN OU MODÉRATEUR (Basé sur Timeout)
+# FONCTIONS UTILITAIRES POUR LE NIVEAU / XP
+# ---------------------------------------------------------
+def get_xp_for_level(level: int) -> int:
+    """Retourne l'XP nécessaire pour passer le niveau spécifié."""
+    return level * 300
+
+def get_total_xp_for_level(level: int) -> int:
+    """Retourne l'XP cumulée totale requise pour atteindre le début d'un niveau."""
+    return sum(get_xp_for_level(lvl) for lvl in range(1, level))
+
+# ---------------------------------------------------------
+# VÉRIFICATION PERSONNALISÉE : ADMIN OU MODÉRATEUR
 # ---------------------------------------------------------
 def is_mod_or_admin():
     async def predicate(ctx):
@@ -116,7 +128,7 @@ def format_duration(time_str: str) -> str:
     return " ".join(result) if result else time_str
 
 # ---------------------------------------------------------
-# FONCTION LOG MODÉRATION PERSONNALISÉE
+# FONCTIONS LOG MODÉRATION & SANCTIONS
 # ---------------------------------------------------------
 async def send_mod_log(guild, title, color, member, moderator, reason, duration=None, sanction_type=None):
     log_id = server_configs["logs"]["mod"]
@@ -234,23 +246,20 @@ bot = commands.Bot(
 async def vocal_xp_loop():
     for guild in bot.guilds:
         for vc in guild.voice_channels:
-            # Ne compte pas les membres seuls ou bots dans le salon
             valid_members = [m for m in vc.members if not m.bot and not m.voice.self_deaf and not m.voice.deaf]
             if len(valid_members) > 1:
                 for member in valid_members:
                     if member.id not in user_xp:
                         user_xp[member.id] = {"xp": 0, "level": 1, "vocal_xp": 0}
                     
-                    # Ajout d'XP vocal par minute
                     gain = random.randint(5, 12)
                     user_xp[member.id]["vocal_xp"] += gain
                     user_xp[member.id]["xp"] += gain
 
-                    # Calcul de montée de niveau silencieuse
-                    current_xp = user_xp[member.id]["xp"]
-                    current_level = user_xp[member.id]["level"]
-                    next_level_xp = current_level * 300
-                    if current_xp >= next_level_xp:
+                    lvl = user_xp[member.id]["level"]
+                    req_xp = get_xp_for_level(lvl)
+                    if user_xp[member.id]["xp"] >= req_xp:
+                        user_xp[member.id]["xp"] -= req_xp
                         user_xp[member.id]["level"] += 1
 
 @bot.event
@@ -313,16 +322,16 @@ async def on_message(message):
 
             await message.channel.send(f"🔇 {message.author.mention} a reçu un avertissement et a été **mute automatiquement pendant 5 minutes** pour spam.", delete_after=10)
 
-    # Système de Niveaux / XP (Sans message public de niveau)
+    # Système de Niveaux / XP
     if user_id not in user_xp:
         user_xp[user_id] = {"xp": 0, "level": 1, "vocal_xp": 0}
 
     user_xp[user_id]["xp"] += random.randint(5, 10)
-    current_xp = user_xp[user_id]["xp"]
     current_level = user_xp[user_id]["level"]
-    next_level_xp = current_level * 300
+    required_xp = get_xp_for_level(current_level)
 
-    if current_xp >= next_level_xp:
+    if user_xp[user_id]["xp"] >= required_xp:
+        user_xp[user_id]["xp"] -= required_xp
         user_xp[user_id]["level"] += 1
 
     await bot.process_commands(message)
@@ -344,13 +353,69 @@ async def on_message_delete(message):
 @bot.event
 async def on_voice_state_update(member, before, after):
     log_id = server_configs["logs"]["voice"]
-    if log_id and before.channel != after.channel:
-        chan = member.guild.get_channel(log_id)
-        if chan:
-            if after.channel:
-                await chan.send(f"🔊 **{member.name}** a rejoint le salon vocal **{after.channel.name}**.")
-            elif before.channel:
-                await chan.send(f"🔊 **{member.name}** a quitté le salon vocal **{before.channel.name}**.")
+    if not log_id:
+        return
+    chan = member.guild.get_channel(log_id)
+    if not chan or before.channel == after.channel:
+        return
+
+    now = datetime.utcnow()
+    heure_str = now.strftime("%H:%M:%S")
+
+    # Connexion à un salon vocal
+    if before.channel is None and after.channel is not None:
+        voice_sessions[member.id] = now
+        embed = discord.Embed(
+            title="🔊 Connexion Vocal",
+            color=discord.Color.green(),
+            timestamp=now
+        )
+        embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+        embed.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="📌 Salon rejoint", value=f"🔊 **{after.channel.name}**", inline=True)
+        embed.add_field(name="🕒 Heure d'arrivée", value=heure_str, inline=True)
+        await chan.send(embed=embed)
+
+    # Déconnexion d'un salon vocal
+    elif before.channel is not None and after.channel is None:
+        join_time = voice_sessions.pop(member.id, None)
+        duration_str = "Inconnue"
+        if join_time:
+            duration_secs = int((now - join_time).total_seconds())
+            mins, secs = divmod(duration_secs, 60)
+            hrs, mins = divmod(mins, 60)
+            if hrs > 0:
+                duration_str = f"{hrs}h {mins}m {secs}s"
+            elif mins > 0:
+                duration_str = f"{mins}m {secs}s"
+            else:
+                duration_str = f"{secs}s"
+
+        embed = discord.Embed(
+            title="🔇 Déconnexion Vocal",
+            color=discord.Color.red(),
+            timestamp=now
+        )
+        embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+        embed.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="📌 Salon quitté", value=f"🔈 **{before.channel.name}**", inline=True)
+        embed.add_field(name="🕒 Heure de départ", value=heure_str, inline=True)
+        embed.add_field(name="⏱️ Temps passé en vocal", value=duration_str, inline=False)
+        await chan.send(embed=embed)
+
+    # Changement de salon vocal
+    elif before.channel is not None and after.channel is not None:
+        embed = discord.Embed(
+            title="🔄 Changement de Salon Vocal",
+            color=discord.Color.blue(),
+            timestamp=now
+        )
+        embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+        embed.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="📁 Ancien salon", value=f"🔈 **{before.channel.name}**", inline=True)
+        embed.add_field(name="📁 Nouveau salon", value=f"🔊 **{after.channel.name}**", inline=True)
+        embed.add_field(name="🕒 Heure", value=heure_str, inline=False)
+        await chan.send(embed=embed)
 
 @bot.event
 async def on_member_update(before, after):
@@ -398,10 +463,17 @@ async def on_command_error(ctx, error):
 async def level(ctx, member: discord.Member = None):
     member = member or ctx.author
     data = user_xp.get(member.id, {"xp": 0, "level": 1, "vocal_xp": 0})
-    xp = data["xp"]
+    current_xp = data["xp"]
     lvl = data["level"]
     vocal_xp = data["vocal_xp"]
-    next_lvl_xp = lvl * 300
+    req_xp = get_xp_for_level(lvl)
+
+    # Calcul dynamique du rang sur le serveur
+    sorted_users = sorted(user_xp.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
+    user_rank = next((i for i, (uid, _) in enumerate(sorted_users, 1) if uid == member.id), len(sorted_users) if sorted_users else 1)
+
+    # XP cumulé total pour l'affichage
+    total_accumulated_xp = get_total_xp_for_level(lvl) + current_xp
 
     card = Image.new("RGBA", (900, 300), (32, 34, 37, 255))
     draw = ImageDraw.Draw(card)
@@ -409,10 +481,14 @@ async def level(ctx, member: discord.Member = None):
     draw.rounded_rectangle([20, 20, 880, 280], radius=20, fill=(47, 49, 54, 255))
     draw.rounded_rectangle([40, 160, 860, 250], radius=10, fill=(54, 57, 63, 255))
 
+    # Calcul exact du remplissage de la barre selon la progression du niveau actuel
     bar_width = 800
-    current_progress = int((xp / next_lvl_xp) * bar_width) if next_lvl_xp > 0 else bar_width
-    current_progress = min(max(current_progress, 20), bar_width)
-    draw.rounded_rectangle([50, 175, 50 + current_progress, 195], radius=8, fill=(235, 120, 30, 255))
+    ratio = current_xp / req_xp if req_xp > 0 else 1.0
+    current_progress = int(ratio * bar_width)
+    current_progress = min(max(current_progress, 0), bar_width)
+    
+    if current_progress > 0:
+        draw.rounded_rectangle([50, 175, 50 + current_progress, 195], radius=8, fill=(235, 120, 30, 255))
 
     try:
         avatar_asset = member.display_avatar.replace(size=128, format="png")
@@ -434,11 +510,11 @@ async def level(ctx, member: discord.Member = None):
         font_small = ImageFont.load_default()
 
     draw.text((170, 45), f"{member.display_name}", fill=(255, 255, 255), font=font_large)
-    draw.text((170, 95), f"Rang : #1  •  Niveau : {lvl}", fill=(180, 180, 180), font=font_small)
+    draw.text((170, 95), f"Rang : #{user_rank}  •  Niveau : {lvl}", fill=(180, 180, 180), font=font_small)
 
-    draw.text((70, 215), f"XP Total : {xp + vocal_xp}", fill=(220, 220, 220), font=font_small)
-    draw.text((360, 215), f"XP Vocal : {vocal_xp}", fill=(220, 220, 220), font=font_small)
-    draw.text((650, 215), f"Objectif : {next_lvl_xp} XP", fill=(220, 220, 220), font=font_small)
+    draw.text((70, 215), f"XP Niveau : {current_xp}/{req_xp}", fill=(220, 220, 220), font=font_small)
+    draw.text((360, 215), f"XP Total : {total_accumulated_xp}", fill=(220, 220, 220), font=font_small)
+    draw.text((650, 215), f"XP Vocal : {vocal_xp}", fill=(220, 220, 220), font=font_small)
 
     buffer = io.BytesIO()
     card.save(buffer, format="PNG")
@@ -574,41 +650,13 @@ async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = 
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
-# CONFIGURATION LOGS (Avec nettoyage des anciens salons)
+# CONFIGURATION LOGS (Réutilisation des salons existants)
 # ===========================================================
-@bot.command(name="autoconfiglog", help="Crée automatiquement tous les salons de logs et supprime les anciens.")
+@bot.command(name="autoconfiglog", help="Crée ou associe la catégorie et les salons de logs sans supprimer d'anciens salons.")
 @commands.has_permissions(administrator=True)
 async def autoconfiglog(ctx):
     guild = ctx.guild
     
-    # Suppression de l'ancienne catégorie de logs si elle existe déjà
-    old_cat_id = server_configs.get("ticket_category_id")
-    if old_cat_id:
-        old_cat = guild.get_channel(old_cat_id)
-        if old_cat:
-            for channel in old_cat.channels:
-                try:
-                    await channel.delete()
-                except:
-                    pass
-            try:
-                await old_cat.delete()
-            except:
-                pass
-
-    # Recherche au cas où une catégorie "📜 • Logs" existerait déjà par son nom
-    for cat in guild.categories:
-        if cat.name == "📜 • Logs":
-            for channel in cat.channels:
-                try:
-                    await channel.delete()
-                except:
-                    pass
-            try:
-                await cat.delete()
-            except:
-                pass
-
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         guild.me: discord.PermissionOverwrite(read_messages=True, manage_channels=True)
@@ -618,18 +666,30 @@ async def autoconfiglog(ctx):
         if role.permissions.administrator:
             overwrites[role] = discord.PermissionOverwrite(read_messages=True)
 
-    category = await guild.create_category("📜 • Logs", overwrites=overwrites)
-    server_configs["ticket_category_id"] = category.id
+    # Recherche ou création de la catégorie "📜 • Logs"
+    category = discord.utils.get(guild.categories, name="📜 • Logs")
+    if not category:
+        category = await guild.create_category("📜 • Logs", overwrites=overwrites)
     
-    c1 = await guild.create_text_channel("🛡️・logs-modération", category=category, overwrites=overwrites)
-    c2 = await guild.create_text_channel("📜・logs-messages", category=category, overwrites=overwrites)
-    c3 = await guild.create_text_channel("🔊・logs-vocaux", category=category, overwrites=overwrites)
-    c4 = await guild.create_text_channel("👑・logs-rôles", category=category, overwrites=overwrites)
-    c5 = await guild.create_text_channel("🚨・logs-anti-raid", category=category, overwrites=overwrites)
-    c6 = await guild.create_text_channel("🎫・logs-tickets", category=category, overwrites=overwrites)
+    server_configs["ticket_category_id"] = category.id
 
-    server_configs["logs"] = {"mod": c1.id, "message": c2.id, "voice": c3.id, "role": c4.id, "raid": c5.id, "ticket": c6.id}
-    await ctx.send("✅ Anciens salons de logs nettoyés et nouveaux salons créés avec succès !")
+    # Salons requis
+    required_channels = {
+        "mod": "🛡️・logs-modération",
+        "message": "📜・logs-messages",
+        "voice": "🔊・logs-vocaux",
+        "role": "👑・logs-rôles",
+        "raid": "🚨・logs-anti-raid",
+        "ticket": "🎫・logs-tickets"
+    }
+
+    for key, name in required_channels.items():
+        chan = discord.utils.get(category.text_channels, name=name)
+        if not chan:
+            chan = await guild.create_text_channel(name, category=category, overwrites=overwrites)
+        server_configs["logs"][key] = chan.id
+
+    await ctx.send("✅ Salons de logs configurés avec succès sans aucune suppression d'anciens salons !")
 
 @bot.command(name="modlog")
 @commands.has_permissions(administrator=True)
