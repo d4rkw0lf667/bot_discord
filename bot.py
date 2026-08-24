@@ -815,7 +815,7 @@ async def giverole(ctx, role: discord.Role, member: discord.Member):
         return await ctx.send("❌ Vous ne pouvez pas attribuer un rôle supérieur ou égal à votre propre rôle le plus haut.")
     
     try:
-        await member.add_roles(role, reason=fAttribué par {ctx.author}")
+        await member.add_roles(role, reason=f"Attribué par {ctx.author}")
         await ctx.send(f"✅ Le rôle **{role.name}** a été attribué avec succès à {member.mention}.")
     except Exception as e:
         await ctx.send(f"❌ Erreur lors de l'attribution du rôle : `{e}`")
@@ -827,7 +827,7 @@ async def removerole(ctx, role: discord.Role, member: discord.Member):
         return await ctx.send("❌ Vous ne pouvez pas retirer un rôle supérieur ou égal à votre propre rôle le plus haut.")
     
     try:
-        await member.remove_roles(role, reason=fRetiré par {ctx.author}")
+        await member.remove_roles(role, reason=f"Retiré par {ctx.author}")
         await ctx.send(f"✅ Le rôle **{role.name}** a été retiré avec succès à {member.mention}.")
     except Exception as e:
         await ctx.send(f"❌ Erreur lors du retrait du rôle : `{e}`")
