@@ -305,20 +305,21 @@ class PersistentRoleView(View):
 
     @discord.ui.button(label="Rôle", style=discord.ButtonStyle.secondary, custom_id="persistent_rr_btn")
     async def persistent_role_callback(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         role_name = button.label
         role = discord.utils.get(guild.roles, name=role_name)
         
         if not role:
-            return await interaction.response.send_message("❌ Ce rôle est introuvable sur le serveur.", ephemeral=True)
+            return await interaction.followup.send("❌ Ce rôle est introuvable sur le serveur.", ephemeral=True)
 
         member = interaction.user
         if role in member.roles:
             await member.remove_roles(role)
-            await interaction.response.send_message(f"❌ Le rôle **{role.name}** vous a été retiré.", ephemeral=True)
+            await interaction.followup.send(f"❌ Le rôle **{role.name}** vous a été retiré.", ephemeral=True)
         else:
             await member.add_roles(role)
-            await interaction.response.send_message(f"✅ Le rôle **{role.name}** vous a été attribué !", ephemeral=True)
+            await interaction.followup.send(f"✅ Le rôle **{role.name}** vous a été attribué !", ephemeral=True)
 
 class TicketView(View):
     def __init__(self, panel_title: str):
@@ -327,6 +328,7 @@ class TicketView(View):
 
     @discord.ui.button(label="Create ticket", style=discord.ButtonStyle.secondary, emoji="📩", custom_id="create_ticket_btn")
     async def create_ticket(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         
         overwrites = {
@@ -358,7 +360,7 @@ class TicketView(View):
             if log_chan:
                 await log_chan.send(f"🎫 Ticket créé par {interaction.user.mention} : {ticket_channel.mention}")
 
-        await interaction.response.send_message(f"✅ Votre ticket a été créé ici : {ticket_channel.mention}", ephemeral=True)
+        await interaction.followup.send(f"✅ Votre ticket a été créé ici : {ticket_channel.mention}", ephemeral=True)
 
         close_view = TicketCloseView()
         staff_ping_text = " ".join(staff_mentions) if staff_mentions else ""
@@ -402,13 +404,14 @@ class DynamicReactionRoleView(View):
                 btn = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
                 
                 async def button_callback(interaction: discord.Interaction, r=role):
+                    await interaction.response.defer(ephemeral=True)
                     member = interaction.user
                     if r in member.roles:
                         await member.remove_roles(r)
-                        await interaction.response.send_message(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
+                        await interaction.followup.send(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
                     else:
                         await member.add_roles(r)
-                        await interaction.response.send_message(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
+                        await interaction.followup.send(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
                 
                 btn.callback = button_callback
                 self.add_item(btn)
@@ -450,7 +453,8 @@ async def on_ready():
         for role in guild.roles:
             role_mappings.append((role, "🔹"))
         if role_mappings:
-            bot.add_view(DynamicReactionRoleView(role_mappings))
+            view = DynamicReactionRoleView(role_mappings)
+            bot.add_view(view)
 
     if not vocal_xp_loop.is_running():
         vocal_xp_loop.start()
