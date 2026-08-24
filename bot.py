@@ -25,7 +25,7 @@ async def start_web_server():
     await site.start()
 
 # ---------------------------------------------------------
-# STOCKAGE & PERSISTENCE FICHIER (JSON) - CORrigé (Type int/str)
+# STOCKAGE & PERSISTENCE FICHIER (JSON) - CORRIGÉ
 # ---------------------------------------------------------
 DATA_FILE = "levels.json"
 
@@ -34,7 +34,6 @@ def load_user_xp():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Conversion robuste des clés en int pour éviter les pertes de données
                 return {int(k): v for k, v in data.items() if str(k).isdigit()}
         except Exception as e:
             print(f"⚠️ Erreur lors du chargement des XP : {e}")
@@ -42,14 +41,13 @@ def load_user_xp():
 
 def save_user_xp():
     try:
-        # Sauvegarde propre avec clés converties en str pour JSON
         data_to_save = {str(k): v for k, v in user_xp.items()}
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=4)
     except Exception as e:
         print(f"⚠️ Erreur lors de la sauvegarde des XP : {e}")
 
-user_xp = load_user_xp()  # {user_id (int): {"xp": 0, "level": 1, "vocal_xp": 0}}
+user_xp = load_user_xp()  
 user_warns = {}       
 spam_tracker = {}     
 voice_sessions = {}   
@@ -263,6 +261,103 @@ bot = commands.Bot(
     command_prefix=PREFIX, intents=intents, help_command=MyHelp()
 )
 
+# ---------------------------------------------------------
+# VUES PERSISTANTES (Garantit la survie après update/restart)
+# ---------------------------------------------------------
+class PersistentRoleView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Rôle", style=discord.ButtonStyle.secondary, custom_id="persistent_rr_btn")
+    async def persistent_role_callback(self, interaction: discord.Interaction, button: Button):
+        guild = interaction.guild
+        role_name = button.label
+        role = discord.utils.get(guild.roles, name=role_name)
+        
+        if not role:
+            return await interaction.response.send_message("❌ Ce rôle est introuvable sur le serveur.", ephemeral=True)
+
+        member = interaction.user
+        if role in member.roles:
+            await member.remove_roles(role)
+            await interaction.response.send_message(f"❌ Le rôle **{role.name}** vous a été retiré.", ephemeral=True)
+        else:
+            await member.add_roles(role)
+            await interaction.response.send_message(f"✅ Le rôle **{role.name}** vous a été attribué !", ephemeral=True)
+
+class TicketView(View):
+    def __init__(self, panel_title: str):
+        super().__init__(timeout=None)
+        self.panel_title = panel_title
+
+    @discord.ui.button(label="Create ticket", style=discord.ButtonStyle.secondary, emoji="📩", custom_id="create_ticket_btn")
+    async def create_ticket(self, interaction: discord.Interaction, button: Button):
+        guild = interaction.guild
+        
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True)
+        }
+        
+        staff_mentions = []
+        for role in guild.roles:
+            if role.permissions.moderate_members or role.permissions.administrator:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                if not role.is_default() and role.mention not in staff_mentions:
+                    staff_mentions.append(role.mention)
+        
+        category = interaction.channel.category
+        clean_title = self.panel_title.lower().replace(" ", "-")
+        channel_name = f"{clean_title}-{interaction.user.name}"
+
+        ticket_channel = await guild.create_text_channel(
+            channel_name,
+            category=category,
+            overwrites=overwrites
+        )
+
+        log_id = server_configs["logs"]["ticket"]
+        if log_id:
+            log_chan = guild.get_channel(log_id)
+            if log_chan:
+                await log_chan.send(f"🎫 Ticket créé par {interaction.user.mention} : {ticket_channel.mention}")
+
+        await interaction.response.send_message(f"✅ Votre ticket a été créé ici : {ticket_channel.mention}", ephemeral=True)
+
+        close_view = TicketCloseView()
+        staff_ping_text = " ".join(staff_mentions) if staff_mentions else ""
+        welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un membre du staff vous répondra."
+        if staff_ping_text:
+            welcome_text = f"{staff_ping_text}\n\n{welcome_text}"
+
+        await ticket_channel.send(welcome_text, view=close_view)
+
+class TicketCloseView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Fermer et Archiver", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn")
+    async def close_ticket(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message("🔒 Génération du transcript et fermeture du ticket...")
+        
+        messages = [f"{m.author} [{m.created_at}]: {m.content}" async for m in interaction.channel.history(limit=None, oldest_first=True)]
+        transcript = "\n".join(messages)
+        file = discord.File(io.BytesIO(transcript.encode('utf-8')), filename=f"transcript-{interaction.channel.name}.txt")
+        
+        log_id = server_configs["logs"]["ticket"]
+        if log_id:
+            log_chan = interaction.guild.get_channel(log_id)
+            if log_chan:
+                embed = discord.Embed(title="🎫 Ticket Fermé & Archivé", color=discord.Color.red(), timestamp=datetime.utcnow())
+                embed.add_field(name="Salon", value=interaction.channel.name)
+                embed.add_field(name="Fermé par", value=interaction.user.mention)
+                embed.add_field(name="Total Messages", value=str(len(messages)), inline=False)
+                await log_chan.send(embed=embed, file=file)
+                
+        await asyncio.sleep(3)
+        await interaction.channel.delete()
+
 @tasks.loop(minutes=1.0)
 async def vocal_xp_loop():
     for guild in bot.guilds:
@@ -290,8 +385,8 @@ async def on_ready():
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
     
-    # Correction : Enregistrement persistant générique pour les boutons de rôles par réaction
-    bot.add_view(PersistentReactionRoleView())
+    # Enregistrement des vues persistantes pour éviter les pertes après update/redémarrage
+    bot.add_view(PersistentRoleView())
     bot.add_view(TicketView(panel_title="New Panel (1)"))
     bot.add_view(TicketCloseView())
 
@@ -645,79 +740,6 @@ async def salonlevel(ctx, channel: discord.TextChannel):
 # ===========================================================
 # SYSTÈME DE TICKETS
 # ===========================================================
-class TicketView(View):
-    def __init__(self, panel_title: str):
-        super().__init__(timeout=None)
-        self.panel_title = panel_title
-
-    @discord.ui.button(label="Create ticket", style=discord.ButtonStyle.secondary, emoji="📩", custom_id="create_ticket_btn")
-    async def create_ticket(self, interaction: discord.Interaction, button: Button):
-        guild = interaction.guild
-        
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True)
-        }
-        
-        staff_mentions = []
-        for role in guild.roles:
-            if role.permissions.moderate_members or role.permissions.administrator:
-                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-                if not role.is_default() and role.mention not in staff_mentions:
-                    staff_mentions.append(role.mention)
-        
-        category = interaction.channel.category
-        clean_title = self.panel_title.lower().replace(" ", "-")
-        channel_name = f"{clean_title}-{interaction.user.name}"
-
-        ticket_channel = await guild.create_text_channel(
-            channel_name,
-            category=category,
-            overwrites=overwrites
-        )
-
-        log_id = server_configs["logs"]["ticket"]
-        if log_id:
-            log_chan = guild.get_channel(log_id)
-            if log_chan:
-                await log_chan.send(f"🎫 Ticket créé par {interaction.user.mention} : {ticket_channel.mention}")
-
-        await interaction.response.send_message(f"✅ Votre ticket a été créé ici : {ticket_channel.mention}", ephemeral=True)
-
-        close_view = TicketCloseView()
-        staff_ping_text = " ".join(staff_mentions) if staff_mentions else ""
-        welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un membre du staff vous répondra."
-        if staff_ping_text:
-            welcome_text = f"{staff_ping_text}\n\n{welcome_text}"
-
-        await ticket_channel.send(welcome_text, view=close_view)
-
-class TicketCloseView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Fermer et Archiver", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn")
-    async def close_ticket(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("🔒 Génération du transcript et fermeture du ticket...")
-        
-        messages = [f"{m.author} [{m.created_at}]: {m.content}" async for m in interaction.channel.history(limit=None, oldest_first=True)]
-        transcript = "\n".join(messages)
-        file = discord.File(io.BytesIO(transcript.encode('utf-8')), filename=f"transcript-{interaction.channel.name}.txt")
-        
-        log_id = server_configs["logs"]["ticket"]
-        if log_id:
-            log_chan = interaction.guild.get_channel(log_id)
-            if log_chan:
-                embed = discord.Embed(title="🎫 Ticket Fermé & Archivé", color=discord.Color.red(), timestamp=datetime.utcnow())
-                embed.add_field(name="Salon", value=interaction.channel.name)
-                embed.add_field(name="Fermé par", value=interaction.user.mention)
-                embed.add_field(name="Total Messages", value=str(len(messages)), inline=False)
-                await log_chan.send(embed=embed, file=file)
-                
-        await asyncio.sleep(3)
-        await interaction.channel.delete()
-
 @bot.command(name="ticketconfig", help="Crée le panneau de création de tickets. Utilisation : ?ticketconfig <titre> <description>")
 @commands.has_permissions(administrator=True)
 async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = "To create a ticket use the Create ticket button"):
@@ -964,41 +986,16 @@ async def giveaway(ctx, time_arg: str, *, content: str):
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
 # ===========================================================
-# SYSTÈMES DE RÔLES PAR RÉACTION (Corrigé et Persistant)
+# SYSTÈME DE RÔLES PAR RÉACTION (Corrigé et Persistant)
 # ===========================================================
-class PersistentReactionRoleView(View):
-    def __init__(self):
-        # Timeout à None pour que la vue persiste indéfiniment après les updates/reboots
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Rôle", style=discord.ButtonStyle.secondary, custom_id="persistent_rr_btn")
-    async def dynamic_role_callback(self, interaction: discord.Interaction, button: Button):
-        # Récupération dynamique du rôle associé au bouton via son label ou description intégrée
-        guild = interaction.guild
-        role_name = button.label
-        role = discord.utils.get(guild.roles, name=role_name)
-        
-        if not role:
-            return await interaction.response.send_message("❌ Ce rôle est introuvable sur le serveur.", ephemeral=True)
-
-        member = interaction.user
-        if role in member.roles:
-            await member.remove_roles(role)
-            await interaction.response.send_message(f"❌ Le rôle **{role.name}** vous a été retiré.", ephemeral=True)
-        else:
-            await member.add_roles(role)
-            await interaction.response.send_message(f"✅ Le rôle **{role.name}** vous a été attribué !", ephemeral=True)
-
 class DynamicReactionRoleView(View):
     def __init__(self, role_mappings):
         super().__init__(timeout=None)
         for role, emoji in role_mappings:
-            # On utilise un custom_id unique basé sur l'ID du rôle pour la persistance
+            # ID unique lié à l'ID du rôle garantissant la persistance après redémarrage
             button = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
             
-            # Callback propre rattaché dynamiquement
             async def callback(interaction: discord.Interaction, r=role):
-                guild = interaction.guild
                 member = interaction.user
                 if r in member.roles:
                     await member.remove_roles(r)
@@ -1045,7 +1042,7 @@ async def role_command(ctx, *, args: str):
     
     view = DynamicReactionRoleView(role_mappings)
     
-    # Enregistrement dynamique des boutons dans le bot à la volée pour qu'ils survivent aux updates
+    # Enregistrement dynamique de chaque vue/bouton dans le bot pour qu'ils persistent activement
     for role, _ in role_mappings:
         async def make_persistent_callback(r=role):
             async def cb(interaction: discord.Interaction):
@@ -1058,10 +1055,9 @@ async def role_command(ctx, *, args: str):
                     await interaction.response.send_message(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
             return cb
         
-        # On recrée un bouton persistant factice pour l'ajouter au gestionnaire global du bot
         b = Button(label=role.name, custom_id=f"rr_btn_{role.id}")
         b.callback = await make_persistent_callback(role)
-        bot.add_view(PersistentReactionRoleView()) # Sécurité globale
+        bot.add_view(DynamicReactionRoleView(role_mappings))
 
     await ctx.send(embed=embed, view=view)
 
