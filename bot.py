@@ -399,10 +399,8 @@ class DynamicReactionRoleView(View):
         super().__init__(timeout=None)
         if role_mappings:
             for role, emoji in role_mappings:
-                # Utilisation d'un custom_id prévisible et unique basé sur l'ID du rôle
                 btn = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
                 
-                # Capture correcte du rôle via closure pour l'appel asynchrone du bouton
                 async def button_callback(interaction: discord.Interaction, r=role):
                     member = interaction.user
                     if r in member.roles:
@@ -446,14 +444,13 @@ async def on_ready():
     bot.add_view(TicketView(panel_title="New Panel (1)"))
     bot.add_view(TicketCloseView())
     
-    # Enregistrement global de la vue dynamique pour tous les rôles configurés existants sur les guildes du bot
+    # Correction de la persistance : On recrée dynamiquement la vue pour chaque rôle existant pour que Discord reconnaisse les custom_id au redémarrage
     for guild in bot.guilds:
         role_mappings = []
         for role in guild.roles:
-            # On recrée les boutons dynamiques persistants pour chaque rôle du serveur afin qu'ils survivent aux redémarrages
             role_mappings.append((role, "🔹"))
         if role_mappings:
-            bot.add_view(DynamicReactionRoleView())
+            bot.add_view(DynamicReactionRoleView(role_mappings))
 
     if not vocal_xp_loop.is_running():
         vocal_xp_loop.start()
@@ -1085,8 +1082,6 @@ async def role_command(ctx, *, args: str):
     )
     
     view = DynamicReactionRoleView(role_mappings)
-    
-    # Enregistrement de la vue auprès du bot pour persistance immédiate de ce message
     bot.add_view(view)
 
     await ctx.send(embed=embed, view=view)
