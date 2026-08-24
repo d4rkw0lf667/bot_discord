@@ -196,7 +196,7 @@ class MyHelp(commands.HelpCommand):
             for c in commands_list:
                 if c.hidden:
                     continue
-                if c.name in ["kick", "mute", "unmute", "warn", "warns", "clear", "giverole", "removerole", "lock"]:
+                if c.name in ["kick", "mute", "unmute", "warn", "warns", "clear", "giverole", "removerole", "lock", "unlock"]:
                     mod_cmds.append(f"`?{c.name}`")
                 elif c.name in ["ban", "unban", "setup_logs", "giveaway", "autoconfiglog", "modlog", "messagelog", 
                               "voicelog", "rolelog", "raidlog", "ticketlog", "welcome", "autorole", "niveauconfig", 
@@ -266,6 +266,12 @@ async def vocal_xp_loop():
 async def on_ready():
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
+    
+    # Enregistrement persistant des vues pour éviter qu'elles ne marchent plus après un reboot
+    bot.add_view(PersistentReactionRoleView())
+    bot.add_view(TicketView(panel_title="New Panel (1)"))
+    bot.add_view(TicketCloseView())
+
     if not vocal_xp_loop.is_running():
         vocal_xp_loop.start()
 
@@ -323,7 +329,6 @@ async def on_message(message):
 
             await send_mod_log(message.guild, "⚠️ Action : Avertissement Automatique & Mute (Anti-spam)", discord.Color.orange(), message.author, bot.user, f"Spam de {server_configs['spam_limit']} messages en {server_configs['spam_time']}s", duration="5m", sanction_type="Avertissement & Mute (Spam)")
 
-            # Log spécifique dans le salon antiraidlogs / raid
             raid_log_id = server_configs["logs"]["raid"]
             if raid_log_id:
                 raid_chan = message.guild.get_channel(raid_log_id)
@@ -441,7 +446,6 @@ async def on_member_update(before, after):
             added_roles = [r for r in after.roles if r not in before.roles]
             removed_roles = [r for r in before.roles if r not in after.roles]
             
-            # Recherche de l'auteur de l'action via les logs d'audit
             executor = "Inconnu"
             try:
                 async for entry in before.guild.audit_logs(limit=3, action=discord.AuditLogAction.member_role_update):
@@ -522,7 +526,6 @@ async def xp_command(ctx, member: discord.Member, amount_str: str):
 
     user_xp[member.id]["xp"] += val
     
-    # Gestion des niveaux si l'XP descend en dessous de 0 ou dépasse le requis
     while user_xp[member.id]["xp"] < 0 and user_xp[member.id]["level"] > 1:
         user_xp[member.id]["level"] -= 1
         req = get_xp_for_level(user_xp[member.id]["level"])
@@ -730,7 +733,7 @@ async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = 
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
-# CONFIGURATION LOGS (Réutilisation intelligente des salons existants)
+# CONFIGURATION LOGS
 # ===========================================================
 @bot.command(name="autoconfiglog", help="Crée ou associe la catégorie et les salons de logs sans supprimer d'anciens salons.")
 @commands.has_permissions(administrator=True)
@@ -806,7 +809,7 @@ async def ticketlog(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Salon tickets défini sur {channel.mention}")
 
 # ===========================================================
-# COMMANDES : RÔLES (GIVE, REMOVE, LOCK) & AUTRES
+# COMMANDES : RÔLES (GIVE, REMOVE, LOCK, UNLOCK) & AUTRES
 # ===========================================================
 @bot.command(name="giverole", help="Donne un rôle à un utilisateur. Utilisation : ?giverole @role @user")
 @is_mod_or_admin()
@@ -841,6 +844,16 @@ async def lock(ctx, channel: discord.TextChannel = None):
         await ctx.send(f"🔒 Le salon {channel.mention} a été verrouillé.")
     except Exception as e:
         await ctx.send(f"❌ Erreur lors du verrouillage : `{e}`")
+
+@bot.command(name="unlock", help="Ouvre/débloque un salon textuel préalablement verrouillé. Utilisation : ?unlock #channel")
+@is_mod_or_admin()
+async def unlock(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    try:
+        await channel.set_permissions(ctx.guild.default_role, send_messages=True, reason=f"Déverrouillé par {ctx.author}")
+        await ctx.send(f"🔓 Le salon {channel.mention} a été déverrouillé.")
+    except Exception as e:
+        await ctx.send(f"❌ Erreur lors du déverrouillage : `{e}`")
 
 @bot.command(name="welcome")
 @commands.has_permissions(administrator=True)
@@ -947,27 +960,33 @@ async def giveaway(ctx, time_arg: str, *, content: str):
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
 # ===========================================================
-# SYSTÈME DE RÔLES PAR RÉACTION
+# SYSTÈME DE RÔLES PAR RÉACTION (Persistant)
 # ===========================================================
-class ReactionRoleView(View):
-    def __init__(self, role_mappings):
-        super().__init__(timeout=None)
-        for role, emoji in role_mappings:
-            self.add_item(ReactionRoleButton(role, emoji))
-
 class ReactionRoleButton(Button):
-    def __init__(self, role: discord.Role, emoji: str):
-        super().__init__(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji)
-        self.role = role
+    def __init__(self, role_id: int, label: str, emoji: str):
+        super().__init__(style=discord.ButtonStyle.secondary, label=label, emoji=emoji, custom_id=f"rr_btn_{role_id}")
+        self.role_id = role_id
 
     async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        role = guild.get_role(self.role_id)
+        if not role:
+            return await interaction.response.send_message("❌ Ce rôle est introuvable sur le serveur.", ephemeral=True)
+
         member = interaction.user
-        if self.role in member.roles:
-            await member.remove_roles(self.role)
-            await interaction.response.send_message(f"❌ Le rôle **{self.role.name}** vous a été retiré.", ephemeral=True)
+        if role in member.roles:
+            await member.remove_roles(role)
+            await interaction.response.send_message(f"❌ Le rôle **{role.name}** vous a été retiré.", ephemeral=True)
         else:
-            await member.add_roles(self.role)
-            await interaction.response.send_message(f"✅ Le rôle **{self.role.name}** vous a été attribué !", ephemeral=True)
+            await member.add_roles(role)
+            await interaction.response.send_message(f"✅ Le rôle **{role.name}** vous a été attribué !", ephemeral=True)
+
+class PersistentReactionRoleView(View):
+    def __init__(self, role_mappings=None):
+        super().__init__(timeout=None)
+        if role_mappings:
+            for role, emoji in role_mappings:
+                self.add_item(ReactionRoleButton(role.id, role.name, emoji))
 
 @bot.command(name="role", help="Crée un embed de rôles par réaction. Utilisation : ?role @role 🎨, @role 🎮")
 @commands.has_permissions(administrator=True)
@@ -1002,7 +1021,7 @@ async def role_command(ctx, *, args: str):
         color=discord.Color.from_rgb(88, 101, 242)
     )
     
-    view = ReactionRoleView(role_mappings)
+    view = PersistentReactionRoleView(role_mappings)
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
