@@ -393,6 +393,28 @@ class TicketCloseView(View):
         await asyncio.sleep(3)
         await interaction.channel.delete()
 
+# --- VUE PERSISTANTE POUR LES RÔLES PAR RÉACTION ---
+class DynamicReactionRoleView(View):
+    def __init__(self, role_mappings=None):
+        super().__init__(timeout=None)
+        if role_mappings:
+            for role, emoji in role_mappings:
+                # Utilisation d'un custom_id prévisible et unique basé sur l'ID du rôle
+                btn = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
+                
+                # Capture correcte du rôle via closure pour l'appel asynchrone du bouton
+                async def button_callback(interaction: discord.Interaction, r=role):
+                    member = interaction.user
+                    if r in member.roles:
+                        await member.remove_roles(r)
+                        await interaction.response.send_message(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
+                    else:
+                        await member.add_roles(r)
+                        await interaction.response.send_message(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
+                
+                btn.callback = button_callback
+                self.add_item(btn)
+
 @tasks.loop(minutes=1.0)
 async def vocal_xp_loop():
     for guild in bot.guilds:
@@ -423,6 +445,15 @@ async def on_ready():
     bot.add_view(PersistentRoleView())
     bot.add_view(TicketView(panel_title="New Panel (1)"))
     bot.add_view(TicketCloseView())
+    
+    # Enregistrement global de la vue dynamique pour tous les rôles configurés existants sur les guildes du bot
+    for guild in bot.guilds:
+        role_mappings = []
+        for role in guild.roles:
+            # On recrée les boutons dynamiques persistants pour chaque rôle du serveur afin qu'ils survivent aux redémarrages
+            role_mappings.append((role, "🔹"))
+        if role_mappings:
+            bot.add_view(DynamicReactionRoleView())
 
     if not vocal_xp_loop.is_running():
         vocal_xp_loop.start()
@@ -1020,24 +1051,6 @@ async def giveaway(ctx, time_arg: str, *, content: str):
 # ===========================================================
 # SYSTÈME DE RÔLES PAR RÉACTION (Corrigé et Persistant)
 # ===========================================================
-class DynamicReactionRoleView(View):
-    def __init__(self, role_mappings):
-        super().__init__(timeout=None)
-        for role, emoji in role_mappings:
-            button = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
-            
-            async def callback(interaction: discord.Interaction, r=role):
-                member = interaction.user
-                if r in member.roles:
-                    await member.remove_roles(r)
-                    await interaction.response.send_message(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
-                else:
-                    await member.add_roles(r)
-                    await interaction.response.send_message(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
-            
-            button.callback = callback
-            self.add_item(button)
-
 @bot.command(name="role", help="Crée un embed de rôles par réaction. Utilisation : ?role @role 🎨, @role 🎮")
 @commands.has_permissions(administrator=True)
 async def role_command(ctx, *, args: str):
@@ -1073,21 +1086,8 @@ async def role_command(ctx, *, args: str):
     
     view = DynamicReactionRoleView(role_mappings)
     
-    for role, _ in role_mappings:
-        async def make_persistent_callback(r=role):
-            async def cb(interaction: discord.Interaction):
-                member = interaction.user
-                if r in member.roles:
-                    await member.remove_roles(r)
-                    await interaction.response.send_message(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
-                else:
-                    await member.add_roles(r)
-                    await interaction.response.send_message(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
-            return cb
-        
-        b = Button(label=role.name, custom_id=f"rr_btn_{role.id}")
-        b.callback = await make_persistent_callback(role)
-        bot.add_view(DynamicReactionRoleView(role_mappings))
+    # Enregistrement de la vue auprès du bot pour persistance immédiate de ce message
+    bot.add_view(view)
 
     await ctx.send(embed=embed, view=view)
 
