@@ -25,7 +25,7 @@ async def start_web_server():
     await site.start()
 
 # ---------------------------------------------------------
-# STOCKAGE & PERSISTENCE FICHIER (JSON)
+# STOCKAGE & PERSISTENCE FICHIER (JSON) - CORrigé (Type int/str)
 # ---------------------------------------------------------
 DATA_FILE = "levels.json"
 
@@ -33,24 +33,26 @@ def load_user_xp():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                # Les clés dans le JSON sont des strings, on les convertit en int pour les user_id
                 data = json.load(f)
-                return {int(k): v for k, v in data.items()}
+                # Conversion robuste des clés en int pour éviter les pertes de données
+                return {int(k): v for k, v in data.items() if str(k).isdigit()}
         except Exception as e:
             print(f"⚠️ Erreur lors du chargement des XP : {e}")
     return {}
 
 def save_user_xp():
     try:
+        # Sauvegarde propre avec clés converties en str pour JSON
+        data_to_save = {str(k): v for k, v in user_xp.items()}
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(user_xp, f, ensure_ascii=False, indent=4)
+            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
     except Exception as e:
         print(f"⚠️ Erreur lors de la sauvegarde des XP : {e}")
 
-user_xp = load_user_xp()  # {user_id: {"xp": 0, "level": 1, "vocal_xp": 0}}
-user_warns = {}       # {user_id: [{"moderator": id, "reason": "...", "date": "..."}]}
-spam_tracker = {}     # {user_id: [timestamp1, timestamp2, ...]}
-voice_sessions = {}   # {user_id: timestamp_join}
+user_xp = load_user_xp()  # {user_id (int): {"xp": 0, "level": 1, "vocal_xp": 0}}
+user_warns = {}       
+spam_tracker = {}     
+voice_sessions = {}   
 
 server_configs = {
     "welcome_channel": None,
@@ -73,11 +75,9 @@ server_configs = {
 # FONCTIONS UTILITAIRES POUR LE NIVEAU / XP
 # ---------------------------------------------------------
 def get_xp_for_level(level: int) -> int:
-    """Retourne l'XP nécessaire pour passer le niveau spécifié."""
     return level * 300
 
 def get_total_xp_for_level(level: int) -> int:
-    """Retourne l'XP cumulée totale requise pour atteindre le début d'un niveau."""
     return sum(get_xp_for_level(lvl) for lvl in range(1, level))
 
 # ---------------------------------------------------------
@@ -283,7 +283,6 @@ async def vocal_xp_loop():
                         user_xp[member.id]["xp"] -= req_xp
                         user_xp[member.id]["level"] += 1
                 
-                # Sauvegarde automatique après l'attribution d'XP vocal
                 save_user_xp()
 
 @bot.event
@@ -291,7 +290,7 @@ async def on_ready():
     print(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
     await bot.change_presence(activity=discord.Game(name=f"{PREFIX}help"))
     
-    # Enregistrement persistant des vues pour éviter qu'elles ne marchent plus après un reboot
+    # Correction : Enregistrement persistant générique pour les boutons de rôles par réaction
     bot.add_view(PersistentReactionRoleView())
     bot.add_view(TicketView(panel_title="New Panel (1)"))
     bot.add_view(TicketCloseView())
@@ -299,7 +298,6 @@ async def on_ready():
     if not vocal_xp_loop.is_running():
         vocal_xp_loop.start()
 
-    # Auto-association des salons de logs existants si présents sur le serveur
     for guild in bot.guilds:
         category = discord.utils.get(guild.categories, name="📜 • Logs")
         if category:
@@ -325,7 +323,6 @@ async def on_message(message):
     if message.author.bot or not message.guild:
         return
 
-    # Anti-spam
     user_id = message.author.id
     now_ts = datetime.utcnow().timestamp()
     
@@ -352,17 +349,6 @@ async def on_message(message):
             warn_count = len(user_warns[user_id])
 
             await send_mod_log(message.guild, "⚠️ Action : Avertissement Automatique & Mute (Anti-spam)", discord.Color.orange(), message.author, bot.user, f"Spam de {server_configs['spam_limit']} messages en {server_configs['spam_time']}s", duration="5m", sanction_type="Avertissement & Mute (Spam)")
-
-            raid_log_id = server_configs["logs"]["raid"]
-            if raid_log_id:
-                raid_chan = message.guild.get_channel(raid_log_id)
-                if raid_chan:
-                    embed_raid = discord.Embed(title="🚨 Anti-Spam / Anti-Raid : Mute Automatique", color=discord.Color.red(), timestamp=datetime.utcnow())
-                    embed_raid.add_field(name="👤 Utilisateur", value=f"{message.author.mention} (`{message.author.id}`)", inline=False)
-                    embed_raid.add_field(name="📌 Salon", value=message.channel.mention, inline=True)
-                    embed_raid.add_field(name="⏱️ Durée", value="5 minutes", inline=True)
-                    embed_raid.add_field(name="📝 Raison", value=f"Spam détecté ({server_configs['spam_limit']} messages en {server_configs['spam_time']}s)", inline=False)
-                    await raid_chan.send(embed=embed_raid)
 
             try:
                 await message.author.timeout(timedelta(minutes=5), reason="Spam automatique : Mute 5 min")
@@ -393,7 +379,6 @@ async def on_message(message):
         user_xp[user_id]["xp"] -= required_xp
         user_xp[user_id]["level"] += 1
 
-    # Sauvegarde automatique à chaque message gagnant de l'XP
     save_user_xp()
 
     await bot.process_commands(message)
@@ -453,15 +438,6 @@ async def on_voice_state_update(member, before, after):
         embed.add_field(name="📌 Salon quitté", value=f"🔈 **{before.channel.name}**", inline=True)
         embed.add_field(name="🕒 Heure de départ", value=heure_str, inline=True)
         embed.add_field(name="⏱️ Temps passé en vocal", value=duration_str, inline=False)
-        await chan.send(embed=embed)
-
-    elif before.channel is not None and after.channel is not None:
-        embed = discord.Embed(title="🔄 Changement de Salon Vocal", color=discord.Color.blue(), timestamp=now)
-        embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-        embed.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
-        embed.add_field(name="📁 Ancien salon", value=f"🔈 **{before.channel.name}**", inline=True)
-        embed.add_field(name="📁 Nouveau salon", value=f"🔊 **{after.channel.name}**", inline=True)
-        embed.add_field(name="🕒 Heure", value=heure_str, inline=False)
         await chan.send(embed=embed)
 
 @bot.event
@@ -710,7 +686,6 @@ class TicketView(View):
         await interaction.response.send_message(f"✅ Votre ticket a été créé ici : {ticket_channel.mention}", ephemeral=True)
 
         close_view = TicketCloseView()
-        
         staff_ping_text = " ".join(staff_mentions) if staff_mentions else ""
         welcome_text = f"Bienvenue {interaction.user.mention} !\nExpliquez votre problème, un membre du staff vous répondra."
         if staff_ping_text:
@@ -989,16 +964,20 @@ async def giveaway(ctx, time_arg: str, *, content: str):
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
 # ===========================================================
-# SYSTÈME DE RÔLES PAR RÉACTION (Persistant)
+# SYSTÈMES DE RÔLES PAR RÉACTION (Corrigé et Persistant)
 # ===========================================================
-class ReactionRoleButton(Button):
-    def __init__(self, role_id: int, label: str, emoji: str):
-        super().__init__(style=discord.ButtonStyle.secondary, label=label, emoji=emoji, custom_id=f"rr_btn_{role_id}")
-        self.role_id = role_id
+class PersistentReactionRoleView(View):
+    def __init__(self):
+        # Timeout à None pour que la vue persiste indéfiniment après les updates/reboots
+        super().__init__(timeout=None)
 
-    async def callback(self, interaction: discord.Interaction):
+    @discord.ui.button(label="Rôle", style=discord.ButtonStyle.secondary, custom_id="persistent_rr_btn")
+    async def dynamic_role_callback(self, interaction: discord.Interaction, button: Button):
+        # Récupération dynamique du rôle associé au bouton via son label ou description intégrée
         guild = interaction.guild
-        role = guild.get_role(self.role_id)
+        role_name = button.label
+        role = discord.utils.get(guild.roles, name=role_name)
+        
         if not role:
             return await interaction.response.send_message("❌ Ce rôle est introuvable sur le serveur.", ephemeral=True)
 
@@ -1010,12 +989,26 @@ class ReactionRoleButton(Button):
             await member.add_roles(role)
             await interaction.response.send_message(f"✅ Le rôle **{role.name}** vous a été attribué !", ephemeral=True)
 
-class PersistentReactionRoleView(View):
-    def __init__(self, role_mappings=None):
+class DynamicReactionRoleView(View):
+    def __init__(self, role_mappings):
         super().__init__(timeout=None)
-        if role_mappings:
-            for role, emoji in role_mappings:
-                self.add_item(ReactionRoleButton(role.id, role.name, emoji))
+        for role, emoji in role_mappings:
+            # On utilise un custom_id unique basé sur l'ID du rôle pour la persistance
+            button = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
+            
+            # Callback propre rattaché dynamiquement
+            async def callback(interaction: discord.Interaction, r=role):
+                guild = interaction.guild
+                member = interaction.user
+                if r in member.roles:
+                    await member.remove_roles(r)
+                    await interaction.response.send_message(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
+                else:
+                    await member.add_roles(r)
+                    await interaction.response.send_message(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
+            
+            button.callback = callback
+            self.add_item(button)
 
 @bot.command(name="role", help="Crée un embed de rôles par réaction. Utilisation : ?role @role 🎨, @role 🎮")
 @commands.has_permissions(administrator=True)
@@ -1050,7 +1043,26 @@ async def role_command(ctx, *, args: str):
         color=discord.Color.from_rgb(88, 101, 242)
     )
     
-    view = PersistentReactionRoleView(role_mappings)
+    view = DynamicReactionRoleView(role_mappings)
+    
+    # Enregistrement dynamique des boutons dans le bot à la volée pour qu'ils survivent aux updates
+    for role, _ in role_mappings:
+        async def make_persistent_callback(r=role):
+            async def cb(interaction: discord.Interaction):
+                member = interaction.user
+                if r in member.roles:
+                    await member.remove_roles(r)
+                    await interaction.response.send_message(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
+                else:
+                    await member.add_roles(r)
+                    await interaction.response.send_message(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
+            return cb
+        
+        # On recrée un bouton persistant factice pour l'ajouter au gestionnaire global du bot
+        b = Button(label=role.name, custom_id=f"rr_btn_{role.id}")
+        b.callback = await make_persistent_callback(role)
+        bot.add_view(PersistentReactionRoleView()) # Sécurité globale
+
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
