@@ -24,7 +24,7 @@ async def start_web_server():
     await site.start()
 
 # ---------------------------------------------------------
-# STOCKAGE EN MÉMOIRE
+# STOCKAGE EN MÉMOIRE (Persistant entre les rechargements de code si conservé dans le scope global)
 # ---------------------------------------------------------
 user_xp = {}          # {user_id: {"xp": 0, "level": 1, "vocal_xp": 0}}
 user_warns = {}       # {user_id: [{"moderator": id, "reason": "...", "date": "..."}]}
@@ -196,11 +196,11 @@ class MyHelp(commands.HelpCommand):
             for c in commands_list:
                 if c.hidden:
                     continue
-                if c.name in ["kick", "mute", "unmute", "warn", "warns", "clear"]:
+                if c.name in ["kick", "mute", "unmute", "warn", "warns", "clear", "giverole", "removerole", "lock"]:
                     mod_cmds.append(f"`?{c.name}`")
                 elif c.name in ["ban", "unban", "setup_logs", "giveaway", "autoconfiglog", "modlog", "messagelog", 
                               "voicelog", "rolelog", "raidlog", "ticketlog", "welcome", "autorole", "niveauconfig", 
-                              "salonlevel", "ticketconfig", "say", "annonce", "role", "ghostping"]:
+                              "salonlevel", "ticketconfig", "say", "annonce", "role", "ghostping", "xp"]:
                     admin_cmds.append(f"`?{c.name}`")
                 elif c.name in ["8ball", "dice", "coinflip", "joke", "avatar", "hug", "slap", "rate"]:
                     fun_cmds.append(f"`?{c.name}`")
@@ -269,6 +269,24 @@ async def on_ready():
     if not vocal_xp_loop.is_running():
         vocal_xp_loop.start()
 
+    # Auto-association des salons de logs existants si présents sur le serveur
+    for guild in bot.guilds:
+        category = discord.utils.get(guild.categories, name="📜 • Logs")
+        if category:
+            server_configs["ticket_category_id"] = category.id
+            mapping = {
+                "mod": "🛡️・logs-modération",
+                "message": "📜・logs-messages",
+                "voice": "🔊・logs-vocaux",
+                "role": "👑・logs-rôles",
+                "raid": "🚨・logs-anti-raid",
+                "ticket": "🎫・logs-tickets"
+            }
+            for key, name in mapping.items():
+                chan = discord.utils.get(category.text_channels, name=name)
+                if chan:
+                    server_configs["logs"][key] = chan.id
+
 # ---------------------------------------------------------
 # ÉVÉNEMENTS & LOGS
 # ---------------------------------------------------------
@@ -304,6 +322,18 @@ async def on_message(message):
             warn_count = len(user_warns[user_id])
 
             await send_mod_log(message.guild, "⚠️ Action : Avertissement Automatique & Mute (Anti-spam)", discord.Color.orange(), message.author, bot.user, f"Spam de {server_configs['spam_limit']} messages en {server_configs['spam_time']}s", duration="5m", sanction_type="Avertissement & Mute (Spam)")
+
+            # Log spécifique dans le salon antiraidlogs / raid
+            raid_log_id = server_configs["logs"]["raid"]
+            if raid_log_id:
+                raid_chan = message.guild.get_channel(raid_log_id)
+                if raid_chan:
+                    embed_raid = discord.Embed(title="🚨 Anti-Spam / Anti-Raid : Mute Automatique", color=discord.Color.red(), timestamp=datetime.utcnow())
+                    embed_raid.add_field(name="👤 Utilisateur", value=f"{message.author.mention} (`{message.author.id}`)", inline=False)
+                    embed_raid.add_field(name="📌 Salon", value=message.channel.mention, inline=True)
+                    embed_raid.add_field(name="⏱️ Durée", value="5 minutes", inline=True)
+                    embed_raid.add_field(name="📝 Raison", value=f"Spam détecté ({server_configs['spam_limit']} messages en {server_configs['spam_time']}s)", inline=False)
+                    await raid_chan.send(embed=embed_raid)
 
             try:
                 await message.author.timeout(timedelta(minutes=5), reason="Spam automatique : Mute 5 min")
@@ -362,21 +392,15 @@ async def on_voice_state_update(member, before, after):
     now = datetime.utcnow()
     heure_str = now.strftime("%H:%M:%S")
 
-    # Connexion à un salon vocal
     if before.channel is None and after.channel is not None:
         voice_sessions[member.id] = now
-        embed = discord.Embed(
-            title="🔊 Connexion Vocal",
-            color=discord.Color.green(),
-            timestamp=now
-        )
+        embed = discord.Embed(title="🔊 Connexion Vocal", color=discord.Color.green(), timestamp=now)
         embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
         embed.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
         embed.add_field(name="📌 Salon rejoint", value=f"🔊 **{after.channel.name}**", inline=True)
         embed.add_field(name="🕒 Heure d'arrivée", value=heure_str, inline=True)
         await chan.send(embed=embed)
 
-    # Déconnexion d'un salon vocal
     elif before.channel is not None and after.channel is None:
         join_time = voice_sessions.pop(member.id, None)
         duration_str = "Inconnue"
@@ -391,11 +415,7 @@ async def on_voice_state_update(member, before, after):
             else:
                 duration_str = f"{secs}s"
 
-        embed = discord.Embed(
-            title="🔇 Déconnexion Vocal",
-            color=discord.Color.red(),
-            timestamp=now
-        )
+        embed = discord.Embed(title="🔇 Déconnexion Vocal", color=discord.Color.red(), timestamp=now)
         embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
         embed.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
         embed.add_field(name="📌 Salon quitté", value=f"🔈 **{before.channel.name}**", inline=True)
@@ -403,13 +423,8 @@ async def on_voice_state_update(member, before, after):
         embed.add_field(name="⏱️ Temps passé en vocal", value=duration_str, inline=False)
         await chan.send(embed=embed)
 
-    # Changement de salon vocal
     elif before.channel is not None and after.channel is not None:
-        embed = discord.Embed(
-            title="🔄 Changement de Salon Vocal",
-            color=discord.Color.blue(),
-            timestamp=now
-        )
+        embed = discord.Embed(title="🔄 Changement de Salon Vocal", color=discord.Color.blue(), timestamp=now)
         embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
         embed.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
         embed.add_field(name="📁 Ancien salon", value=f"🔈 **{before.channel.name}**", inline=True)
@@ -423,7 +438,39 @@ async def on_member_update(before, after):
     if log_id and before.roles != after.roles:
         chan = before.guild.get_channel(log_id)
         if chan:
-            await chan.send(f"👑 Rôles mis à jour pour **{after.name}**.")
+            added_roles = [r for r in after.roles if r not in before.roles]
+            removed_roles = [r for r in before.roles if r not in after.roles]
+            
+            # Recherche de l'auteur de l'action via les logs d'audit
+            executor = "Inconnu"
+            try:
+                async for entry in before.guild.audit_logs(limit=3, action=discord.AuditLogAction.member_role_update):
+                    if entry.target.id == after.id:
+                        executor = entry.user.mention
+                        break
+            except:
+                pass
+
+            now = datetime.utcnow()
+            heure_str = now.strftime("%d/%m/%Y à %H:%M:%S")
+
+            if added_roles:
+                for role in added_roles:
+                    embed = discord.Embed(title="👑 Log Rôle : Attribué", color=discord.Color.green(), timestamp=now)
+                    embed.add_field(name="👤 Membre", value=f"{after.mention} (`{after.id}`)", inline=False)
+                    embed.add_field(name="📌 Rôle donné", value=role.mention, inline=True)
+                    embed.add_field(name="🛡️ Par", value=executor, inline=True)
+                    embed.add_field(name="🕒 Heure", value=heure_str, inline=False)
+                    await chan.send(embed=embed)
+
+            if removed_roles:
+                for role in removed_roles:
+                    embed = discord.Embed(title="👑 Log Rôle : Retiré", color=discord.Color.red(), timestamp=now)
+                    embed.add_field(name="👤 Membre", value=f"{after.mention} (`{after.id}`)", inline=False)
+                    embed.add_field(name="📌 Rôle retiré", value=role.mention, inline=True)
+                    embed.add_field(name="🛡️ Par", value=executor, inline=True)
+                    embed.add_field(name="🕒 Heure", value=heure_str, inline=False)
+                    await chan.send(embed=embed)
 
 @bot.event
 async def on_member_join(member):
@@ -457,8 +504,44 @@ async def on_command_error(ctx, error):
         raise error
 
 # ===========================================================
-# COMMANDES LEVEL / RANK / CONFIG
+# COMMANDES LEVEL / RANK / CONFIG / XP
 # ===========================================================
+@bot.command(name="xp", help="Ajoute ou retire de l'XP à un utilisateur. Utilisation : ?xp @user +40 ou ?xp @user -40")
+@commands.has_permissions(administrator=True)
+async def xp_command(ctx, member: discord.Member, amount_str: str):
+    if not (amount_str.startswith("+") or amount_str.startswith("-")):
+        return await ctx.send("❌ Veuillez spécifier un signe `+` ou `-` devant le montant (ex: `+40` ou `-40`).")
+    
+    try:
+        val = int(amount_str)
+    except ValueError:
+        return await ctx.send("❌ Valeur numérique invalide.")
+
+    if member.id not in user_xp:
+        user_xp[member.id] = {"xp": 0, "level": 1, "vocal_xp": 0}
+
+    user_xp[member.id]["xp"] += val
+    
+    # Gestion des niveaux si l'XP descend en dessous de 0 ou dépasse le requis
+    while user_xp[member.id]["xp"] < 0 and user_xp[member.id]["level"] > 1:
+        user_xp[member.id]["level"] -= 1
+        req = get_xp_for_level(user_xp[member.id]["level"])
+        user_xp[member.id]["xp"] += req
+
+    if user_xp[member.id]["xp"] < 0:
+        user_xp[member.id]["xp"] = 0
+
+    req_xp = get_xp_for_level(user_xp[member.id]["level"])
+    while user_xp[member.id]["xp"] >= req_xp:
+        user_xp[member.id]["xp"] -= req_xp
+        user_xp[member.id]["level"] += 1
+        req_xp = get_xp_for_level(user_xp[member.id]["level"])
+
+    current_lvl = user_xp[member.id]["level"]
+    current_xp = user_xp[member.id]["xp"]
+
+    await ctx.send(f"✅ Opération réussie ! {member.mention} est maintenant au niveau **{current_lvl}** avec **{current_xp} XP**.")
+
 @bot.command(name="level", aliases=["profil", "su", "rank"], help="Affiche ta carte de niveau visuelle.")
 async def level(ctx, member: discord.Member = None):
     member = member or ctx.author
@@ -468,11 +551,9 @@ async def level(ctx, member: discord.Member = None):
     vocal_xp = data["vocal_xp"]
     req_xp = get_xp_for_level(lvl)
 
-    # Calcul dynamique du rang sur le serveur
     sorted_users = sorted(user_xp.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
     user_rank = next((i for i, (uid, _) in enumerate(sorted_users, 1) if uid == member.id), len(sorted_users) if sorted_users else 1)
 
-    # XP cumulé total pour l'affichage
     total_accumulated_xp = get_total_xp_for_level(lvl) + current_xp
 
     card = Image.new("RGBA", (900, 300), (32, 34, 37, 255))
@@ -481,7 +562,6 @@ async def level(ctx, member: discord.Member = None):
     draw.rounded_rectangle([20, 20, 880, 280], radius=20, fill=(47, 49, 54, 255))
     draw.rounded_rectangle([40, 160, 860, 250], radius=10, fill=(54, 57, 63, 255))
 
-    # Calcul exact du remplissage de la barre selon la progression du niveau actuel
     bar_width = 800
     ratio = current_xp / req_xp if req_xp > 0 else 1.0
     current_progress = int(ratio * bar_width)
@@ -650,7 +730,7 @@ async def ticketconfig(ctx, title: str = "New Panel (1)", *, description: str = 
     await ctx.send(embed=embed, view=view)
 
 # ===========================================================
-# CONFIGURATION LOGS (Réutilisation des salons existants)
+# CONFIGURATION LOGS (Réutilisation intelligente des salons existants)
 # ===========================================================
 @bot.command(name="autoconfiglog", help="Crée ou associe la catégorie et les salons de logs sans supprimer d'anciens salons.")
 @commands.has_permissions(administrator=True)
@@ -666,14 +746,12 @@ async def autoconfiglog(ctx):
         if role.permissions.administrator:
             overwrites[role] = discord.PermissionOverwrite(read_messages=True)
 
-    # Recherche ou création de la catégorie "📜 • Logs"
     category = discord.utils.get(guild.categories, name="📜 • Logs")
     if not category:
         category = await guild.create_category("📜 • Logs", overwrites=overwrites)
     
     server_configs["ticket_category_id"] = category.id
 
-    # Salons requis
     required_channels = {
         "mod": "🛡️・logs-modération",
         "message": "📜・logs-messages",
@@ -689,7 +767,7 @@ async def autoconfiglog(ctx):
             chan = await guild.create_text_channel(name, category=category, overwrites=overwrites)
         server_configs["logs"][key] = chan.id
 
-    await ctx.send("✅ Salons de logs configurés avec succès sans aucune suppression d'anciens salons !")
+    await ctx.send("✅ Salons de logs configurés ou rattachés avec succès en préservant l'existant !")
 
 @bot.command(name="modlog")
 @commands.has_permissions(administrator=True)
@@ -728,8 +806,42 @@ async def ticketlog(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Salon tickets défini sur {channel.mention}")
 
 # ===========================================================
-# COMMANDES : BIENVENUE & AUTOROLE
+# COMMANDES : RÔLES (GIVE, REMOVE, LOCK) & AUTRES
 # ===========================================================
+@bot.command(name="giverole", help="Donne un rôle à un utilisateur. Utilisation : ?giverole @role @user")
+@is_mod_or_admin()
+async def giverole(ctx, role: discord.Role, member: discord.Member):
+    if role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+        return await ctx.send("❌ Vous ne pouvez pas attribuer un rôle supérieur ou égal à votre propre rôle le plus haut.")
+    
+    try:
+        await member.add_roles(role, reason=fAttribué par {ctx.author}")
+        await ctx.send(f"✅ Le rôle **{role.name}** a été attribué avec succès à {member.mention}.")
+    except Exception as e:
+        await ctx.send(f"❌ Erreur lors de l'attribution du rôle : `{e}`")
+
+@bot.command(name="removerole", help="Retire un rôle à un utilisateur. Utilisation : ?removerole @role @user")
+@is_mod_or_admin()
+async def removerole(ctx, role: discord.Role, member: discord.Member):
+    if role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+        return await ctx.send("❌ Vous ne pouvez pas retirer un rôle supérieur ou égal à votre propre rôle le plus haut.")
+    
+    try:
+        await member.remove_roles(role, reason=fRetiré par {ctx.author}")
+        await ctx.send(f"✅ Le rôle **{role.name}** a été retiré avec succès à {member.mention}.")
+    except Exception as e:
+        await ctx.send(f"❌ Erreur lors du retrait du rôle : `{e}`")
+
+@bot.command(name="lock", help="Ferme un salon textuel pour empêcher les membres d'écrire. Utilisation : ?lock #channel")
+@is_mod_or_admin()
+async def lock(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    try:
+        await channel.set_permissions(ctx.guild.default_role, send_messages=False, reason=fVerrouillé par {ctx.author}")
+        await ctx.send(f"🔒 Le salon {channel.mention} a été verrouillé.")
+    except Exception as e:
+        await ctx.send(f"❌ Erreur lors du verrouillage : `{e}`")
+
 @bot.command(name="welcome")
 @commands.has_permissions(administrator=True)
 async def welcome(ctx, channel: discord.TextChannel):
