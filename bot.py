@@ -837,7 +837,7 @@ async def removerole(ctx, role: discord.Role, member: discord.Member):
 async def lock(ctx, channel: discord.TextChannel = None):
     channel = channel or ctx.channel
     try:
-        await channel.set_permissions(ctx.guild.default_role, send_messages=False, reason=fVerrouillé par {ctx.author}")
+        await channel.set_permissions(ctx.guild.default_role, send_messages=False, reason=f"Verrouillé par {ctx.author}")
         await ctx.send(f"🔒 Le salon {channel.mention} a été verrouillé.")
     except Exception as e:
         await ctx.send(f"❌ Erreur lors du verrouillage : `{e}`")
