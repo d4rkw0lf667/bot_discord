@@ -47,6 +47,16 @@ async def init_db():
                     vocal_xp INTEGER DEFAULT 0
                 )
             """)
+            # Table pour stocker les rôles par réaction persistants
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS reaction_roles (
+                    message_id BIGINT,
+                    role_id BIGINT,
+                    emoji TEXT,
+                    guild_id BIGINT,
+                    PRIMARY KEY (message_id, role_id)
+                )
+            """)
         print("✅ Connecté à la base de données PostgreSQL avec succès.")
     except Exception as e:
         print(f"⚠️ Erreur lors de l'initialisation de la base de données : {e}")
@@ -395,26 +405,30 @@ class TicketCloseView(View):
         await asyncio.sleep(3)
         await interaction.channel.delete()
 
-# --- VUE PERSISTANTE POUR LES RÔLES PAR RÉACTION ---
-class DynamicReactionRoleView(View):
-    def __init__(self, role_mappings=None):
+# --- VUE PERSISTANTE DYNAMIQUE POUR LES RÔLES PAR BOUTON ---
+class PersistentDynamicReactionRoleView(View):
+    def __init__(self, role_mappings):
         super().__init__(timeout=None)
-        if role_mappings:
-            for role, emoji in role_mappings:
-                btn = Button(style=discord.ButtonStyle.secondary, label=role.name, emoji=emoji, custom_id=f"rr_btn_{role.id}")
-                
-                async def button_callback(interaction: discord.Interaction, r=role):
-                    await interaction.response.defer(ephemeral=True)
-                    member = interaction.user
-                    if r in member.roles:
-                        await member.remove_roles(r)
-                        await interaction.followup.send(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
-                    else:
-                        await member.add_roles(r)
-                        await interaction.followup.send(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
-                
-                btn.callback = button_callback
-                self.add_item(btn)
+        for role, emoji in role_mappings:
+            btn = Button(
+                style=discord.ButtonStyle.secondary, 
+                label=role.name, 
+                emoji=emoji, 
+                custom_id=f"rr_btn_{role.id}"
+            )
+            
+            async def button_callback(interaction: discord.Interaction, r=role):
+                await interaction.response.defer(ephemeral=True)
+                member = interaction.user
+                if r in member.roles:
+                    await member.remove_roles(r)
+                    await interaction.followup.send(f"❌ Le rôle **{r.name}** vous a été retiré.", ephemeral=True)
+                else:
+                    await member.add_roles(r)
+                    await interaction.followup.send(f"✅ Le rôle **{r.name}** vous a été attribué !", ephemeral=True)
+            
+            btn.callback = button_callback
+            self.add_item(btn)
 
 @tasks.loop(minutes=1.0)
 async def vocal_xp_loop():
@@ -447,14 +461,26 @@ async def on_ready():
     bot.add_view(TicketView(panel_title="New Panel (1)"))
     bot.add_view(TicketCloseView())
     
-    # Correction de la persistance : On recrée dynamiquement la vue pour chaque rôle existant pour que Discord reconnaisse les custom_id au redémarrage
-    for guild in bot.guilds:
-        role_mappings = []
-        for role in guild.roles:
-            role_mappings.append((role, "🔹"))
-        if role_mappings:
-            view = DynamicReactionRoleView(role_mappings)
-            bot.add_view(view)
+    # Restauration automatique de toutes les vues de rôles enregistrées en DB après redémarrage
+    if db_pool:
+        async with db_pool.acquire() as connection:
+            rows = await connection.fetch("SELECT DISTINCT message_id, guild_id FROM reaction_roles")
+            for row in rows:
+                guild_id = row["guild_id"]
+                guild = bot.get_guild(guild_id)
+                if not guild:
+                    continue
+                
+                role_rows = await connection.fetch("SELECT role_id, emoji FROM reaction_roles WHERE message_id = $1", row["message_id"])
+                role_mappings = []
+                for rr in role_rows:
+                    role = guild.get_role(rr["role_id"])
+                    if role:
+                        role_mappings.append((role, rr["emoji"]))
+                
+                if role_mappings:
+                    bot.add_view(PersistentDynamicReactionRoleView(role_mappings))
+        print("✅ Vues de rôles par réaction rechargées depuis la base de données.")
 
     if not vocal_xp_loop.is_running():
         vocal_xp_loop.start()
@@ -1050,9 +1076,9 @@ async def giveaway(ctx, time_arg: str, *, content: str):
         await ctx.send(f"❌ Malheureusement, personne n'a participé au giveaway pour **{prize}**...")
 
 # ===========================================================
-# SYSTÈME DE RÔLES PAR RÉACTION (Corrigé et Persistant)
+# SYSTÈME DE RÔLES PAR BOUTON (Corrigé et Persistant via DB)
 # ===========================================================
-@bot.command(name="role", help="Crée un embed de rôles par réaction. Utilisation : ?role @role 🎨, @role 🎮")
+@bot.command(name="role", help="Crée un embed de rôles par bouton. Utilisation : ?role @role 🎨, @role 🎮")
 @commands.has_permissions(administrator=True)
 async def role_command(ctx, *, args: str):
     try:
@@ -1085,10 +1111,19 @@ async def role_command(ctx, *, args: str):
         color=discord.Color.from_rgb(88, 101, 242)
     )
     
-    view = DynamicReactionRoleView(role_mappings)
+    view = PersistentDynamicReactionRoleView(role_mappings)
+    msg = await ctx.send(embed=embed, view=view)
     bot.add_view(view)
 
-    await ctx.send(embed=embed, view=view)
+    # Sauvegarde en base de données pour permettre la persistance après un redéploiement
+    if db_pool:
+        async with db_pool.acquire() as connection:
+            for role, emoji in role_mappings:
+                await connection.execute("""
+                    INSERT INTO reaction_roles (message_id, role_id, emoji, guild_id)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (message_id, role_id) DO NOTHING
+                """, msg.id, role.id, emoji, ctx.guild.id)
 
 # ===========================================================
 # COMMANDES DE WARNS
